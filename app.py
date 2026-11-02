@@ -38,6 +38,48 @@ h1,h2,h3,p,label,span{color:inherit}
 [data-testid="stMetricLabel"]{color:#9cacc1!important}
 [data-testid="stMetricValue"]{color:#eaf2fa!important;font-weight:700}
 [data-testid="stSelectbox"]>div>div, [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input{background:#172231!important;color:#eaf2fa!important;border-color:#304154!important}
+
+/* Accessible form-control contrast (dark mode): native Streamlit / BaseWeb widgets. */
+[data-testid="stSelectbox"] label,
+[data-testid="stSelectbox"] [data-testid="stWidgetLabel"] *,
+[data-testid="stRadio"] [data-testid="stWidgetLabel"] *,
+[data-testid="stNumberInput"] label,
+[data-testid="stTextInput"] label,
+[data-testid="stSlider"] label {color:#c8d5e5!important;opacity:1!important}
+[data-testid="stSelectbox"] [data-baseweb="select"],
+[data-testid="stSelectbox"] [data-baseweb="select"]>div {
+  background:#172231!important;
+  border-color:#41546b!important;
+  color:#e6edf5!important;
+  opacity:1!important;
+}
+[data-testid="stSelectbox"] [data-baseweb="select"] *,
+[data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"],
+[data-testid="stSelectbox"] [data-baseweb="select"] [data-testid="stMarkdownContainer"],
+[data-testid="stSelectbox"] [data-baseweb="select"] input {
+  color:#e6edf5!important;
+  -webkit-text-fill-color:#e6edf5!important;
+  opacity:1!important;
+}
+[data-testid="stSelectbox"] [data-baseweb="select"] input::placeholder,
+[data-testid="stTextInput"] input::placeholder {
+  color:#a8b8cb!important;
+  -webkit-text-fill-color:#a8b8cb!important;
+  opacity:1!important;
+}
+/* Dropdown popovers are rendered outside the selectbox container. */
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] [data-baseweb="menu"] {
+  background:#172231!important;
+  color:#e6edf5!important;
+}
+[data-baseweb="popover"] [role="option"] * {color:#e6edf5!important;opacity:1!important}
+[data-baseweb="popover"] [aria-selected="true"],
+[data-baseweb="popover"] [role="option"]:hover {background:#2c4055!important}
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input {color:#e6edf5!important;-webkit-text-fill-color:#e6edf5!important}
+
 [data-testid="stCheckbox"] label,[data-testid="stRadio"] label{color:#dce6f2!important}
 button[kind="primary"]{background:#22ab73!important;border-color:#22ab73!important;color:#08120d!important}
 [data-testid="stDataFrame"], [data-testid="stTable"]{border:1px solid #2c3847!important;border-radius:10px}
