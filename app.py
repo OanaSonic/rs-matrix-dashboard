@@ -15,17 +15,40 @@ st.caption('Relative strength vs SPY · S&P 500 / NYSE + Nasdaq · Date indicati
 HEADERS={'User-Agent':'Mozilla/5.0 (compatible; MarketResearchDashboard/1.0)'}
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_universe():
-    sp=pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
-    sp['Symbol']=sp['Symbol'].str.replace('.', '-', regex=False)
-    sp=sp.rename(columns={'GICS Sector':'Sector','GICS Sub-Industry':'Industry'})
-    sp=sp[['Symbol','Security','Sector','Industry']].drop_duplicates('Symbol')
+def get_sp500():
+    """Fetch S&P 500 constituents from two independent public sources."""
+    errors=[]
+    try:
+        r=requests.get('https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv',headers={'User-Agent':'Mozilla/5.0'},timeout=20)
+        r.raise_for_status()
+        sp=pd.read_csv(io.StringIO(r.text),dtype=str)
+        sp=sp.rename(columns={'GICS Sector':'Sector','GICS Sub-Industry':'Industry','Name':'Security'})
+        sp['Industry']=sp.get('Industry',pd.Series('Unclassified',index=sp.index)).fillna('Unclassified')
+        sp['Symbol']=sp['Symbol'].str.replace('.', '-',regex=False)
+        sp=sp[['Symbol','Security','Sector','Industry']].dropna(subset=['Symbol']).drop_duplicates('Symbol')
+        if len(sp)>400:return sp
+        errors.append('GitHub: listă prea scurtă')
+    except Exception as e:errors.append('GitHub: '+str(e)[:120])
+    try:
+        r=requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',headers={'User-Agent':'Mozilla/5.0'},timeout=20)
+        r.raise_for_status()
+        sp=pd.read_html(io.StringIO(r.text))[0]
+        sp=sp.rename(columns={'GICS Sector':'Sector','GICS Sub-Industry':'Industry'})
+        sp['Symbol']=sp['Symbol'].str.replace('.', '-',regex=False)
+        sp=sp[['Symbol','Security','Sector','Industry']].drop_duplicates('Symbol')
+        if len(sp)>400:return sp
+    except Exception as e:errors.append('Wikipedia: '+str(e)[:120])
+    raise RuntimeError('Nu pot obține lista S&P 500. '+'; '.join(errors))
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_all_us():
+    """Best-effort US listings; failure must not disable S&P 500 / SPDR views."""
     def download_table(url):
-        r=requests.get(url,headers=HEADERS,timeout=25)
+        r=requests.get(url,headers={'User-Agent':'Mozilla/5.0'},timeout=20)
         r.raise_for_status()
         return pd.read_csv(io.StringIO(r.text),sep='|',dtype=str)
     nas=download_table('https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt')
-    nas=nas[(nas['Test Issue']=='N') & (nas['Symbol'].notna())]
+    nas=nas[(nas['Test Issue']=='N') & nas['Symbol'].notna()]
     nas=nas[['Symbol','Security Name']].rename(columns={'Security Name':'Security'})
     oth=download_table('https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt')
     oth=oth[(oth['Test Issue']=='N') & oth['Exchange'].isin(['N','A'])]
@@ -34,8 +57,7 @@ def get_universe():
     all_us['Symbol']=all_us['Symbol'].str.replace('.', '-',regex=False)
     all_us=all_us[all_us['Symbol'].str.fullmatch(r'[A-Z]{1,5}(-[A-Z])?',na=False)]
     all_us=all_us[~all_us['Security'].str.contains('ETF|ETN|Exchange Traded|Warrant|Preferred|Depositary|Units|Rights',case=False,na=False)]
-    all_us=all_us.merge(sp[['Symbol','Sector','Industry']],how='left',on='Symbol')
-    return sp,all_us
+    return all_us
 
 @st.cache_data(ttl=1800,show_spinner=False)
 def prices(symbols):
@@ -88,9 +110,9 @@ def calculate(close,volume,lookback,sp,universe):
     return data
 
 try:
-    sp,all_us=get_universe()
+    sp=get_sp500()
 except Exception as e:
-    st.error(f'Nu am putut descărca lista de simboluri: {e}')
+    st.error(f'Nu am putut descărca lista S&P 500: {e}')
     st.stop()
 
 with st.sidebar:
@@ -102,9 +124,16 @@ with st.sidebar:
     minervini=st.checkbox('Minervini candidates only',False)
     symbol_search=st.text_input('Ticker search','').upper().strip()
     if choice=='NYSE + Nasdaq':
-        st.warning('Whole-market mode can require thousands of Yahoo Finance requests and may be rate-limited. Use a subset for free-tier reliability.')
-        limit=st.slider('Number of tickers to scan',100,min(2000,len(all_us)),500,100)
+        try:
+            all_us=get_all_us().merge(sp[['Symbol','Sector','Industry']],on='Symbol',how='left')
+            st.warning('NYSE + Nasdaq folosește liste publice și poate fi limitat de furnizor. Scanare în subset.')
+            limit=st.slider('Number of tickers to scan',100,min(2000,len(all_us)),500,100)
+        except Exception as e:
+            st.error('Lista completă NYSE/Nasdaq nu este accesibilă de pe server (de exemplu, HTTP 403). Modul S&P 500 rămâne disponibil. Detalii: '+str(e)[:160])
+            all_us=sp.copy()
+            limit=len(sp)
     else:
+        all_us=sp
         limit=len(sp)
     run=st.button('Refresh / scan',type='primary',use_container_width=True)
 
