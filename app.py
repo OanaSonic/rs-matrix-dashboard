@@ -1,4 +1,4 @@
-"""RS Matrix — dark trading dashboard.
+"""RS Matrix v5 — dark trading dashboard with sector grouping, market breadth and macro.
 Public daily-data research tool; does not promise consolidated real-time quotes.
 """
 import html
@@ -226,6 +226,97 @@ div[data-testid="stExpander"]{background:#101824;border:1px solid #253142;border
 .rsm-section{font-size:17px;color:#ecf2f8;font-weight:750;margin:12px 0 4px}
 .rsm-small{font-size:12px;color:#9daec2;margin:2px 0 12px}
 @media(max-width:900px){[data-testid="stMainBlockContainer"]{padding-left:1rem!important;padding-right:1rem!important}.rsm-matrix-head,.rsm-matrix-row{grid-template-columns:135px repeat(4,110px) 65px}.rsm-brand{flex-wrap:wrap}.rsm-title{font-size:20px}}
+
+/* v5 contrast: popup is portalled outside Streamlit's widget subtree.
+   Dark background AND light foreground must be forced on the same popup nodes. */
+html body div[data-baseweb="popover"],
+html body div[data-baseweb="popover"] > div,
+html body div[data-baseweb="popover"] > div > div,
+html body div[data-baseweb="popover"] [data-baseweb="menu"],
+html body div[data-baseweb="popover"] [data-baseweb="menu"] > div,
+html body ul[role="listbox"],
+html body div[role="listbox"],
+html body div[data-baseweb="menu"],
+html body [data-testid="stSelectboxVirtualDropdown"],
+html body [data-testid="stSelectboxVirtualDropdown"] > div {
+  background:#172231!important;background-color:#172231!important;
+  color:#e6edf5!important;color-scheme:dark!important;
+  border-color:#40536a!important;
+}
+html body div[data-baseweb="popover"] [role="option"],
+html body div[data-baseweb="popover"] [role="option"] *,
+html body [data-baseweb="menu"] [role="option"],
+html body [data-baseweb="menu"] [role="option"] *,
+html body [role="listbox"] [role="option"],
+html body [role="listbox"] [role="option"] *,
+html body [data-testid="stSelectboxVirtualDropdown"] * {
+ color:#e6edf5!important;-webkit-text-fill-color:#e6edf5!important;opacity:1!important;
+}
+html body div[data-baseweb="popover"] [role="option"][aria-selected="true"],
+html body [role="listbox"] [role="option"]:hover,
+html body [data-baseweb="menu"] [role="option"]:hover {
+ background:#30455c!important;
+}
+html body [data-testid="stSelectbox"] [data-baseweb="select"] *,
+html body [data-testid="stMultiSelect"] [data-baseweb="select"] *,
+html body [data-testid="stSelectbox"] [role="combobox"] *,
+html body [data-testid="stSelectbox"] [role="combobox"],
+html body [data-testid="stMultiSelect"] [role="combobox"] {
+ color:#e6edf5!important;-webkit-text-fill-color:#e6edf5!important;
+}
+
+/* Force dark backgrounds also on each unselected row. Otherwise a browser
+   may render white option rows with our white text. */
+html body [data-baseweb="popover"] [role="option"],
+html body [data-baseweb="menu"] [role="option"],
+html body [role="listbox"] [role="option"],
+html body div[data-baseweb="popover"] li,
+html body [data-testid="stSelectboxVirtualDropdown"] [role="option"] {
+ background-color:#172231!important;color:#e6edf5!important;
+ -webkit-text-fill-color:#e6edf5!important;
+}
+html body [data-baseweb="popover"] [role="option"]:hover,
+html body [data-baseweb="popover"] [role="option"][aria-selected="true"],
+html body [role="listbox"] [role="option"]:hover,
+html body [role="listbox"] [role="option"][aria-selected="true"] {
+ background-color:#314963!important;
+}
+/* Sector / industry grouped matrix with no Unknown column */
+.rsm-matrix{overflow-x:auto}
+.rsm-grid{min-width:850px}
+.rsm-matrix-head{display:grid;grid-template-columns:75px 235px repeat(4,minmax(128px,1fr))}
+.rsm-matrix-head>div{font-size:13px;letter-spacing:.2px;padding:14px 9px}
+.rsm-sector-group{display:grid;grid-template-columns:75px minmax(0,1fr);border-bottom:2px solid #3b5266}
+.rsm-sector-band{display:flex;align-items:center;justify-content:center;gap:12px;flex-direction:column;background:#1a2a3a;border-right:1px solid #456077;min-height:80px;padding:15px 0}
+.rsm-sector-vertical{writing-mode:vertical-rl;transform:rotate(180deg);font-weight:800;font-size:14px;letter-spacing:.65px;color:#d9e8f7;text-align:center;max-height:440px}
+.rsm-sector-count{font-size:12px;color:#a8c1d8}
+.rsm-sector-rows{min-width:0}
+.rsm-matrix-row{display:grid;grid-template-columns:235px repeat(4,minmax(128px,1fr));min-height:66px}
+.rsm-industry{padding:14px 12px;font-size:14px;font-weight:600;line-height:1.4;color:#d3e0ec}
+.rsm-cell{padding:8px;gap:6px}
+.rsm-bubble{width:41px;height:41px;font-size:10px}
+.rsm-sname{font-size:13px;width:150px}
+.rsm-rank{font-size:12px;width:22px}
+.rsm-rs{font-size:12px;width:49px}
+.rsm-sector{padding:10px 0}
+.rsm-etflabel{font-size:14px}
+.rsm-etflabel b{font-size:15px}
+/* SPDR: never hide the names in the left margin of the chart. */
+.rsm-spdr-ranks{border:1px solid #2b3c4d;border-radius:12px;padding:12px 16px;background:#131b26}
+.rsm-spdr-rank{display:grid;grid-template-columns:minmax(205px,240px) minmax(120px,1fr) 72px;gap:12px;align-items:center;min-height:41px;border-bottom:1px solid #253142}
+.rsm-spdr-rank:last-child{border:0}
+.rsm-spdr-name{font-size:13px;color:#e1ebf5;white-space:normal;line-height:1.3}
+.rsm-spdr-name b{color:#f5f9fd;margin-right:7px}
+.rsm-spdr-track{background:#253142;border-radius:6px;height:13px;position:relative;overflow:hidden}
+.rsm-spdr-track::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;background:#8195a9}
+.rsm-spdr-bar{position:absolute;top:0;height:100%;border-radius:4px;min-width:2px}
+.rsm-spdr-value{font-size:13px;font-weight:750;text-align:right}
+@media(max-width:1100px){
+ .rsm-matrix-head{grid-template-columns:65px 195px repeat(4,minmax(115px,1fr))}
+ .rsm-sector-group{grid-template-columns:65px minmax(0,1fr)}
+ .rsm-matrix-row{grid-template-columns:195px repeat(4,minmax(115px,1fr))}
+ .rsm-spdr-rank{grid-template-columns:minmax(150px,190px) minmax(70px,1fr) 60px;gap:7px}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -236,7 +327,7 @@ SPDR = {
 }
 PERIODS = ["1D", "1W", "1M", "3M", "6M", "YTD"]
 HEADERS = {"User-Agent":"Mozilla/5.0 (compatible; RSMatrixResearch/3.0)"}
-TIER_ORDER = ["Mega", "Large", "Mid", "Small", "Unknown"]
+TIER_ORDER = ["Mega", "Large", "Mid", "Small"]
 
 
 def fmt_signed(x):
@@ -478,32 +569,70 @@ def sector_rail(frame):
 
 
 def bubbles_matrix(frame, max_symbols=160, group_col="Industry"):
-    if frame.empty:return "<div class='rsm-rail'>No matching tickers.</div>"
-    frame=frame.sort_values("RS %",ascending=False).head(max_symbols).copy()
-    # Order groups by their strongest performers, not alphabetically.
-    groups=frame.groupby(group_col).agg(strength=("RS %","mean"),n=("Symbol","size")).sort_values("strength",ascending=False)
-    lines=["<div class='rsm-matrix'><div class='rsm-grid'>",
-           "<div class='rsm-matrix-head'><div>INDUSTRY</div>",
-           "<div>MEGA <small>≥$200B</small></div><div>LARGE <small>$50–200B</small></div>",
-           "<div>MID <small>$20–50B</small></div><div>SMALL <small>&lt;$20B</small></div><div>UNKNOWN</div></div>"]
-    for ind in groups.index:
-        sub=frame.loc[frame[group_col]==ind].copy()
-        lines.append("<div class='rsm-matrix-row'><div class='rsm-industry'>"+html.escape(str(ind))+" <span style='color:#657c93'>&nbsp;· "+str(len(sub))+"</span></div>")
-        for tier in TIER_ORDER:
-            group=sub[sub["Cap tier"]==tier]
-            content=[]
-            for _, r in group.iterrows():
-                sym=html.escape(str(r["Symbol"]))
-                sector=html.escape(str(r.get("Sector","")))
-                cap=r["Market Cap"]
-                cap_str=f"${cap/1e9:,.1f}B" if pd.notna(cap) else "unavailable"
-                desc=html.escape(f"{r['Symbol']} | {sector} | RS {fmt_signed(r['RS %'])} | Market cap {cap_str} | RVOL {r['RVOL']:.2f}" if pd.notna(r['RVOL']) else f"{r['Symbol']} | RS {fmt_signed(r['RS %'])} | Market cap {cap_str}",quote=True)
-                url="https://www.tradingview.com/chart/?symbol="+quote(str(r["Symbol"]),safe="")
-                content.append(f"<a class='rsm-bubble' target='_blank' rel='noopener noreferrer' href='{url}' title='{desc}' style='background:{color_rs(r['RS %'])}'>{sym}</a>")
-            lines.append("<div class='rsm-cell'>"+("".join(content) if content else "<span class='rsm-empty'>·</span>")+"</div>")
-        lines.append("</div>")
+    """Sector group bands run vertically before the industry column.
+
+    Securities without verified cap are omitted rather than put in Unknown;
+    their number is reported explicitly in the user interface.
+    """
+    if frame.empty:
+        return "<div class='rsm-rail'>No matching tickers.</div>"
+    eligible = frame.loc[frame["Cap tier"].isin(TIER_ORDER)].copy()
+    if eligible.empty:
+        return "<div class='rsm-rail'>No securities with a known market-cap tier. Check the Nasdaq snapshot source.</div>"
+    eligible = eligible.sort_values("RS %",ascending=False).head(max_symbols)
+    sector_strength = eligible.groupby("Sector",dropna=False)["RS %"].mean().sort_values(ascending=False)
+    lines = ["<div class='rsm-matrix'><div class='rsm-grid'>",
+             "<div class='rsm-matrix-head'><div>SECTOR</div><div>INDUSTRY</div>",
+             "<div>MEGA <small>≥$200B</small></div><div>LARGE <small>$50–200B</small></div>",
+             "<div>MID <small>$20–50B</small></div><div>SMALL <small>&lt;$20B</small></div></div>"]
+    for sec in sector_strength.index:
+        sector_frame = eligible[eligible["Sector"]==sec]
+        ind_strength = (sector_frame.groupby(group_col,dropna=False)["RS %"]
+                        .mean().sort_values(ascending=False))
+        sec_label=html.escape(str(sec))
+        lines.append("<div class='rsm-sector-group'>" +
+                     f"<div class='rsm-sector-band'><span class='rsm-sector-vertical'>{sec_label}</span>"+
+                     f"<span class='rsm-sector-count'>{len(sector_frame)}</span></div>" +
+                     "<div class='rsm-sector-rows'>")
+        for ind in ind_strength.index:
+            sub=sector_frame.loc[sector_frame[group_col]==ind]
+            lines.append("<div class='rsm-matrix-row'><div class='rsm-industry'>"+
+                         html.escape(str(ind))+" <span style='color:#8196ab'>&nbsp;· "+str(len(sub))+"</span></div>")
+            for tier in TIER_ORDER:
+                matching=sub[sub["Cap tier"]==tier]
+                circles=[]
+                for _,r in matching.iterrows():
+                    symbol=str(r["Symbol"])
+                    cap=r["Market Cap"]
+                    cap_text=f"${cap/1e9:,.1f}B" if pd.notna(cap) else "N/A"
+                    tooltip=html.escape(f"{symbol} · {sec} · {ind} · RS {fmt_signed(r['RS %'])} · cap {cap_text}",quote=True)
+                    url="https://www.tradingview.com/chart/?symbol="+quote(symbol,safe="")
+                    circles.append(f"<a class='rsm-bubble' href='{url}' target='_blank' rel='noopener noreferrer' title='{tooltip}' style='background:{color_rs(r['RS %'])}'>{html.escape(symbol)}</a>")
+                lines.append("<div class='rsm-cell'>"+("".join(circles) if circles else "<span class='rsm-empty'>·</span>")+"</div>")
+            lines.append("</div>")
+        lines.append("</div></div>")
     lines.append("</div></div>")
     return "".join(lines)
+
+
+def spdr_rank_html(ranking):
+    """Accessible, always-visible labels for all 11 Select Sector SPDR ETFs."""
+    if ranking.empty:
+        return "<div class='rsm-rail'>No available sector prices.</div>"
+    max_abs=max(1.0,ranking["RS vs SPY %"].abs().max(skipna=True))
+    lines=["<div class='rsm-spdr-ranks'>"]
+    for _,r in ranking.iterrows():
+        v=r["RS vs SPY %"]
+        val=fmt_signed(v)
+        width=0 if pd.isna(v) else min(49.9,abs(float(v))/max_abs*49.9)
+        left=(50 if pd.isna(v) or v>=0 else 50-width)
+        bgcolor=color_rs(v)
+        lines.append("<div class='rsm-spdr-rank'>"
+                     f"<div class='rsm-spdr-name'><b>{html.escape(str(r['ETF']))}</b>{html.escape(str(r['Sector']))}</div>"
+                     f"<div class='rsm-spdr-track' role='img' aria-label='{html.escape(str(r['ETF'])+' '+val,quote=True)}'>"
+                     f"<span class='rsm-spdr-bar' style='left:{left:.2f}%;width:{width:.2f}%;background:{bgcolor}'></span></div>"
+                     f"<div class='rsm-spdr-value' style='color:{bgcolor}'>{val}</div></div>")
+    return "".join(lines)+"</div>"
 
 
 def spdr_bubbles(holdings, value_col="RS vs SPY %"):
@@ -603,29 +732,179 @@ def rotation_fig(c):
     return fig,pd.DataFrame(rows)
 
 
+
+# ---------- Market breadth and macro ----------
+def make_breadth(close, volume, membership):
+    """Breadth calculated from *available members of the chosen universe*.
+
+    Uses close-to-close daily bars, not exchange-wide advance/decline feeds.
+    Historical series is survivorship-biased to today's membership.
+    """
+    if close.empty or len(close)<255:
+        return {},pd.DataFrame(),pd.DataFrame()
+    members=membership[["Symbol","Sector"]].drop_duplicates("Symbol")
+    names=[s for s in members.Symbol if s in close.columns and s!="SPY"]
+    if not names:return {},pd.DataFrame(),pd.DataFrame()
+    c=close[names].apply(pd.to_numeric,errors="coerce")
+    last2=c.iloc[-2:]
+    current=last2.iloc[-1]
+    preceding=last2.iloc[-2]
+    valid=(current.gt(0)&preceding.gt(0)&current.notna()&preceding.notna())
+    d=(current-preceding).where(valid)
+    advances=int((d>0).sum());declines=int((d<0).sum());unchanged=int((d==0).sum())
+    coverage=int(valid.sum())
+    ma_rates={}
+    for w in (20,50,200):
+        ma=c.rolling(w,min_periods=w).mean().iloc[-1]
+        eligible=current.notna()&ma.notna()&(ma>0)
+        ma_rates[w]=(float((current[eligible]>ma[eligible]).mean()*100) if eligible.any() else float('nan'),int(eligible.sum()))
+    prev_52_high=c.shift(1).rolling(252,min_periods=240).max().iloc[-1]
+    prev_52_low=c.shift(1).rolling(252,min_periods=240).min().iloc[-1]
+    eligible_hl=current.notna()&prev_52_high.notna()&prev_52_low.notna()
+    new_highs=int(((current>prev_52_high)&eligible_hl).sum())
+    new_lows=int(((current<prev_52_low)&eligible_hl).sum())
+    v=volume.reindex(index=c.index,columns=c.columns).iloc[-1]
+    advancing_volume=v.where(d>0).sum(min_count=1)
+    declining_volume=v.where(d<0).sum(min_count=1)
+    adv_vol_ratio=float(advancing_volume/declining_volume) if pd.notna(declining_volume) and declining_volume>0 else float('nan')
+    changed=c.diff()
+    net=(changed.gt(0).sum(axis=1)-changed.lt(0).sum(axis=1)).rename("Net advances")
+    valid_n=(c.notna()&c.shift(1).notna()).sum(axis=1)
+    ad_line=net.cumsum().rename("A/D cumulative (base 0)")
+    mc=net.ewm(span=19,adjust=False).mean()-net.ewm(span=39,adjust=False).mean()
+    ma50=c.rolling(50,min_periods=50).mean()
+    ma200=c.rolling(200,min_periods=200).mean()
+    coverage_50=(ma50.notna()&c.notna()).sum(axis=1)
+    coverage_200=(ma200.notna()&c.notna()).sum(axis=1)
+    pct50=100*(c>ma50).sum(axis=1)/coverage_50.replace(0,np.nan)
+    pct200=100*(c>ma200).sum(axis=1)/coverage_200.replace(0,np.nan)
+    chart=pd.DataFrame({"Net advancers":net,"A/D line":ad_line,"McClellan-style":mc,
+                        "Above MA50 %":pct50,"Above MA200 %":pct200,"Coverage":valid_n})
+    chart=chart.tail(126)
+    mem=members.set_index("Symbol").reindex(names)
+    group=pd.DataFrame({"Symbol":names,"Sector":mem["Sector"].values,
+                        "Advance":d.reindex(names).gt(0).values,
+                        "Decline":d.reindex(names).lt(0).values,
+                        "Above MA50":(current>ma50.iloc[-1]).reindex(names).values,
+                        "Valid MA50":(current.notna()&ma50.iloc[-1].notna()).reindex(names).values})
+    by_sector=[]
+    for sec,g in group.groupby("Sector",dropna=False):
+        denom=int(g["Valid MA50"].sum())
+        by_sector.append({"Sector":sec,"Stocks":len(g),"Advancing":int(g["Advance"].sum()),
+                          "Declining":int(g["Decline"].sum()),
+                          "Above MA50 %":100*int(g["Above MA50"].sum())/denom if denom else np.nan,
+                          "Coverage MA50":denom})
+    summary={"Coverage today":coverage,"Total in universe":len(names),
+             "Advances":advances,"Declines":declines,"Unchanged":unchanged,
+             "A/D ratio":advances/declines if declines else np.nan,
+             "New 52W highs":new_highs,"New 52W lows":new_lows,"52W coverage":int(eligible_hl.sum()),
+             "Adv/Decl volume":adv_vol_ratio,"McClellan-style":float(mc.iloc[-1]),
+             "MA percentages":ma_rates,"Date":str(pd.Timestamp(c.index[-1]).date())}
+    return summary,chart,pd.DataFrame(by_sector).sort_values("Above MA50 %",ascending=False)
+
+
+MACRO_GROUPS={
+    "Index futures": {"ES=F":"S&P 500 E-mini","NQ=F":"Nasdaq 100 E-mini", "YM=F":"Dow E-mini", "RTY=F":"Russell 2000 E-mini"},
+    "Precious & industrial metals": {"GC=F":"Gold","SI=F":"Silver","HG=F":"Copper","PL=F":"Platinum","PA=F":"Palladium"},
+    "Energy & agriculture": {"CL=F":"WTI Crude","BZ=F":"Brent Crude","NG=F":"Natural Gas","ZC=F":"Corn","ZW=F":"Wheat","ZS=F":"Soybeans"},
+    "Treasury futures": {"ZT=F":"2Y Note futures","ZF=F":"5Y Note futures","ZN=F":"10Y Note futures","ZB=F":"30Y Bond futures"},
+    "US interest-rate yields": {"^IRX":"13-week T-bill","^FVX":"5-year Treasury","^TNX":"10-year Treasury","^TYX":"30-year Treasury"},
+}
+MACRO_SYMBOLS={k: (grp,label) for grp,group in MACRO_GROUPS.items() for k,label in group.items()}
+MACRO_YIELD={"^IRX","^FVX","^TNX","^TYX"}
+
+
+FRED_RATES = {"DFF":"Effective Fed funds rate", "SOFR":"SOFR overnight",
+              "DGS2":"Treasury 2Y", "DGS5":"Treasury 5Y",
+              "DGS10":"Treasury 10Y", "DGS30":"Treasury 30Y"}
+
+
+@st.cache_data(ttl=6*3600,show_spinner=False)
+def fred_rates():
+    """No-key FRED graph CSV; optional and always graceful on 403/timeout.
+
+    Daily published interest rates, not streaming tradable quotes.
+    """
+    try:
+        url="https://fred.stlouisfed.org/graph/fredgraph.csv"
+        response=requests.get(url,params={"id":",".join(FRED_RATES),"cosd":"2025-01-01"},
+                              headers=HEADERS,timeout=(3,8))
+        response.raise_for_status()
+        df=pd.read_csv(io.StringIO(response.text),parse_dates=[0],na_values=[".",""])
+        if df.empty:return pd.DataFrame()
+        df=df.set_index(df.columns[0])
+        df.index=pd.to_datetime(df.index,errors="coerce")
+        df=df[~df.index.isna()].sort_index()
+        available=[sym for sym in FRED_RATES if sym in df]
+        return df[available].apply(pd.to_numeric,errors="coerce")
+    except Exception:
+        return pd.DataFrame()
+
+
+def fred_rates_table(data):
+    rows=[]
+    if data.empty:return pd.DataFrame()
+    for sym,label in FRED_RATES.items():
+        if sym not in data:continue
+        observations=data[sym].dropna()
+        if observations.empty:continue
+        last=float(observations.iloc[-1]);prior=float(observations.iloc[-2]) if len(observations)>1 else np.nan
+        rows.append({"Series":sym,"Rate":label,"Yield / rate %":last,
+                    "Δ prior observation (pp)":last-prior if np.isfinite(prior) else np.nan,
+                    "Reported":str(pd.Timestamp(observations.index[-1]).date()),
+                    "Source":"https://fred.stlouisfed.org/series/"+sym})
+    return pd.DataFrame(rows)
+
+
+def macro_snapshot(c):
+    """Last observed prices and returns for available Yahoo futures/rates data."""
+    if c.empty:return pd.DataFrame()
+    out=[]
+    for sym,(group,label) in MACRO_SYMBOLS.items():
+        if sym not in c.columns:continue
+        series=pd.to_numeric(c[sym],errors="coerce").dropna()
+        if len(series)<2:continue
+        current=float(series.iloc[-1]);prev=float(series.iloc[-2])
+        if current<=0 or prev<=0:continue
+        is_yield=sym in MACRO_YIELD
+        # Yahoo's current Treasury yield series ^IRX/^FVX/^TNX/^TYX
+        # are already quoted in percent units (e.g. ^TNX 4.929 means 4.929%).
+        rate=current
+        change=(current-prev) if is_yield else (current/prev-1)*100
+        week=(current/float(series.iloc[-6])-1)*100 if len(series)>5 and not is_yield else np.nan
+        month=(current/float(series.iloc[-22])-1)*100 if len(series)>21 and not is_yield else np.nan
+        out.append({"Group":group,"Ticker":sym,"Instrument":label,"Last":rate,
+                    "1D change":change,"1W %":week,"1M %":month,
+                    "Units":"% yield" if is_yield else "contract price",
+                    "As of":str(pd.Timestamp(series.index[-1]).date()),
+                    "TradingView":"https://www.tradingview.com/chart/?symbol="+quote(sym,safe="")})
+    return pd.DataFrame(out)
+
 # ---------- Header / global filters ----------
 st.markdown("""<div class='rsm-brand'>
 <span class='rsm-brandmark'>▥</span><div><div class='rsm-title'>RS MATRIX <span style='color:#57bf94'>/</span> MARKET LEADERSHIP</div>
-<div class='rsm-subtitle'>S&P 500 · Sector SPDR · Market-cap tiers · Breakout candidates</div></div>
+<div class='rsm-subtitle'>S&P 500 · Sector SPDR · Breadth · Commodities · Futures · Rates</div></div>
 <span class='rsm-chip'>FREE DAILY DATA</span></div>""",unsafe_allow_html=True)
 
-bar1,bar2,bar3,bar4=st.columns([1.7,2.7,1.9,1.5])
+# A dedicated navigation row avoids six workspaces wrapping inside a narrow column.
+view=st.radio("Workspace",["RS MATRIX","SECTOR SPDR","SECTOR ROTATION","MARKET BREADTH","MACRO MARKETS","MINERVINI SCANNER"],
+              horizontal=True,label_visibility="collapsed")
+bar1,bar3,bar4=st.columns([2.5,1.35,1.2],gap="large")
 with bar1:
     universe_choice=st.selectbox("Universe",["S&P 500","NYSE + Nasdaq (top N)"],
-                                help="Used for RS Matrix and Minervini Scanner; sector views use only sector ETFs.")
-with bar2:
-    view=st.radio("Workspace",["RS MATRIX","SECTOR SPDR","SECTOR ROTATION","MINERVINI SCANNER"],
-                  horizontal=True,label_visibility="collapsed")
+                                help="Used for RS Matrix, Market Breadth and Minervini Scanner; SPDR and Macro data are independent.")
 with bar3:
-    period=st.selectbox("RS WINDOW",PERIODS,index=1)
+    period=st.selectbox("RS WINDOW",PERIODS,index=1,
+                        help="Used for RS Matrix, SPDR ETF strength and scanner.")
 with bar4:
+    st.write(" ")
     refresh=st.button("↻ Refresh prices",type="primary",use_container_width=True)
 
 if refresh:
     prices.clear()
 
 # Sector modules should NOT incur hundreds of quote downloads from the stock scanner.
-if view in ("RS MATRIX","MINERVINI SCANNER"):
+if view in ("RS MATRIX","MINERVINI SCANNER","MARKET BREADTH"):
     try:
         sp=get_sp500()
     except Exception as exc:
@@ -634,7 +913,7 @@ if view in ("RS MATRIX","MINERVINI SCANNER"):
         snap=get_snapshot()
     except Exception as exc:
         snap=None
-        st.warning("Market-cap snapshot unavailable: cap tiers will show 'Unknown'. " + str(exc)[:160])
+        st.warning("Market-cap snapshot unavailable: securities without cap data will be excluded from cap-tier matrix. " + str(exc)[:160])
 
     all_symbols=market_scope(sp,snap,universe_choice=="S&P 500")
     if universe_choice!="S&P 500":
@@ -665,7 +944,7 @@ if view=="RS MATRIX":
     sub1,sub2,sub3=st.columns([1.85,1.0,1.4])
     with sub1:
         sectors=sorted(data["Sector"].dropna().unique().tolist())
-        sector_name=st.selectbox("Sector",["All sectors"]+sectors,index=(sectors.index("Technology")+1 if "Technology" in sectors else 0))
+        sector_name=st.selectbox("Sector",["All sectors"]+sectors,index=0)
     with sub2:
         show_count=st.select_slider("Max bubbles",options=[50,80,120,160,250,500],value=160)
     with sub3:
@@ -686,9 +965,10 @@ if view=="RS MATRIX":
         st.markdown(sector_rail(data),unsafe_allow_html=True)
         st.caption("Sector RS = unweighted mean of available constituent RS, not an ETF return. Ranked over the selected window.")
     with right:
-        st.markdown("<div class='rsm-head'>INDUSTRY × MARKET CAP · "+html.escape(period)+" vs SPY</div>",unsafe_allow_html=True)
+        st.markdown("<div class='rsm-head'>SECTOR → INDUSTRY × MARKET CAP · "+html.escape(period)+" vs SPY</div>",unsafe_allow_html=True)
         st.markdown(bubbles_matrix(shown,max_symbols=show_count),unsafe_allow_html=True)
-        st.markdown("<div class='rsm-foot'>Green: outperforming SPY · Red: underperforming · Hover to view RS/market cap · Click a ticker for TradingView. 'Unknown' = missing market cap. Top symbols by RS shown.</div>",unsafe_allow_html=True)
+        missing_cap=int((~shown["Cap tier"].isin(TIER_ORDER)).sum())
+    st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · open TradingView by clicking. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
     st.markdown("<div class='rsm-section'>Quick leadership list</div>",unsafe_allow_html=True)
     top=shown.sort_values("RS %",ascending=False).head(35).copy()
     top["TradingView"]=top.Symbol.map(lambda s:"https://www.tradingview.com/chart/?symbol="+quote(str(s),safe=""))
@@ -711,16 +991,12 @@ elif view=="SECTOR SPDR":
         ranking=pd.DataFrame({"ETF":sector_etfs,"Sector":[SPDR[t] for t in sector_etfs]})
         ranking["RS vs SPY %"]=ranking.ETF.map(etf_rs)
         ranking=ranking.sort_values("RS vs SPY %",ascending=False)
-        bars=go.Figure(go.Bar(x=ranking["RS vs SPY %"],y=ranking["ETF"],orientation="h",
-            marker_color=[color_rs(v) for v in ranking["RS vs SPY %"]],
-            customdata=ranking["Sector"],hovertemplate="%{y} · %{customdata}<br>RS %{x:.2f}%<extra></extra>"))
-        bars.update_layout(paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color="#d8e3ee"),height=395,
-                           margin=dict(l=5,r=10,t=8,b=22),xaxis=dict(title="RS vs SPY %",gridcolor=LINE),
-                           yaxis=dict(autorange="reversed"))
-        a,b=st.columns([2,1],gap="medium")
-        with a: st.plotly_chart(bars,use_container_width=True,theme=None)
+        a,b=st.columns([1.85,1],gap="medium")
+        with a:
+            st.markdown("<div class='rsm-head'>SECTOR ETF STRENGTH · FULL NAMES</div>",unsafe_allow_html=True)
+            st.markdown(spdr_rank_html(ranking),unsafe_allow_html=True)
         with b:
-            st.dataframe(ranking,hide_index=True,use_container_width=True,height=397,
+            st.dataframe(ranking,hide_index=True,use_container_width=True,height=510,
                 column_config={"RS vs SPY %":st.column_config.NumberColumn(format="%+.2f")})
     etf_pick=st.selectbox("Top holdings for sector",["All 11 ETFs"]+[f"{s} · {SPDR[s]}" for s in SPDR],index=1)
     picks=sector_etfs if etf_pick=="All 11 ETFs" else [etf_pick.split(" · ")[0]]
@@ -775,6 +1051,107 @@ elif view=="SECTOR ROTATION":
                                "RS momentum pp":st.column_config.NumberColumn(format="%+.2f")})
         st.info("Custom rotation proxy — NOT an official RRG/JdK RS-Ratio or RS-Momentum. X: 21-session ETF return vs SPY. Y: latest 5-session RS minus preceding 5-session RS (percentage points). Trails are weekly observations, not predictions.")
 
+elif view=="MARKET BREADTH":
+    st.markdown("<div class='rsm-section'>MARKET BREADTH · participation inside selected universe</div>",unsafe_allow_html=True)
+    st.markdown("<div class='rsm-small'>S&P 500 or selected NYSE/Nasdaq sample · daily breadth from individual adjusted closes · not official exchange-wide NYSE/Nasdaq internals.</div>",unsafe_allow_html=True)
+    breadth,chart,by_sector=make_breadth(close,volume,universe)
+    if not breadth:
+        st.warning("Insufficient coverage for market breadth. Historical daily data for at least 255 sessions is required.")
+    else:
+        a,b,c,d,e=st.columns(5)
+        a.metric("Advancing",f"{breadth['Advances']:,}")
+        b.metric("Declining",f"{breadth['Declines']:,}")
+        c.metric("A/D ratio",f"{breadth['A/D ratio']:.2f}" if pd.notna(breadth['A/D ratio']) else "—")
+        d.metric("52W highs / lows",f"{breadth['New 52W highs']} / {breadth['New 52W lows']}")
+        e.metric("Valid prices",f"{breadth['Coverage today']} / {breadth['Total in universe']}")
+        p,q,r=st.columns(3)
+        for box,w in zip((p,q,r),(20,50,200)):
+            pct,denom=breadth['MA percentages'][w]
+            box.metric(f"Above MA{w}",f"{pct:.1f}%" if pd.notna(pct) else "—",help=f"Calculated across {denom} stocks with sufficient history")
+        ratio=breadth['Adv/Decl volume']
+        st.markdown(f"<span class='rsm-pill'>Advancing/declining daily volume: {ratio:.2f}×</span>" if pd.notna(ratio) else "<span class='rsm-pill'>Advancing/declining daily volume: unavailable</span>",unsafe_allow_html=True)
+        st.markdown(f"<span class='rsm-pill'>Breadth as of {breadth['Date']} · 52W eligible: {breadth['52W coverage']}</span>",unsafe_allow_html=True)
+        cc1,cc2=st.columns(2,gap="medium")
+        with cc1:
+            fig=go.Figure()
+            fig.add_trace(go.Scatter(x=chart.index,y=chart['Above MA50 %'],name='Above MA50',line=dict(color='#34c385',width=2)))
+            fig.add_trace(go.Scatter(x=chart.index,y=chart['Above MA200 %'],name='Above MA200',line=dict(color='#5aa7e4',width=2)))
+            fig.update_layout(title="% of stocks above moving averages",paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color='#d6e2ef'),height=350,margin=dict(l=25,r=10,t=48,b=22),yaxis=dict(title='%',range=[0,100],gridcolor=LINE),xaxis=dict(gridcolor=LINE),legend=dict(orientation='h',y=1.04))
+            st.plotly_chart(fig,use_container_width=True,theme=None)
+        with cc2:
+            fig=go.Figure()
+            fig.add_trace(go.Scatter(x=chart.index,y=chart['A/D line'],name='Cumulative A/D (relative baseline)',line=dict(color='#f0bd62',width=2)))
+            fig.update_layout(title="Advance–decline line (current universe)",paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color='#d6e2ef'),height=350,margin=dict(l=25,r=10,t=48,b=22),xaxis=dict(gridcolor=LINE),yaxis=dict(gridcolor=LINE))
+            st.plotly_chart(fig,use_container_width=True,theme=None)
+        cc3,cc4=st.columns([1.15,1],gap="medium")
+        with cc3:
+            fig=go.Figure(go.Bar(x=chart.index,y=chart['Net advancers'],marker_color=['#24bd76' if x>=0 else '#f05256' for x in chart['Net advancers']]))
+            fig.update_layout(title="Daily net advancers (advances − declines)",paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color='#d6e2ef'),height=330,margin=dict(l=25,r=10,t=45,b=22),xaxis=dict(gridcolor=LINE),yaxis=dict(gridcolor=LINE))
+            st.plotly_chart(fig,use_container_width=True,theme=None)
+        with cc4:
+            st.markdown("<div class='rsm-head'>BREADTH BY SECTOR · % ABOVE MA50</div>",unsafe_allow_html=True)
+            st.dataframe(by_sector,hide_index=True,use_container_width=True,height=335,
+                column_config={'Above MA50 %':st.column_config.ProgressColumn('Above MA50 %',min_value=0,max_value=100,format='%.1f%%')})
+        st.caption("Definitions: advances/declines vs prior daily close; 52-week extremes vs prior 252 sessions; A/D line and 19/39 EMA oscillator calculated from available current-universe constituents. Historical breadth has survivorship bias; incomplete histories are excluded per indicator. This is not exchange-wide NYSE/Nasdaq advance/decline data.")
+
+elif view=="MACRO MARKETS":
+    st.markdown("<div class='rsm-section'>MACRO MARKETS · futures, commodities, metals & rates</div>",unsafe_allow_html=True)
+    st.markdown("<div class='rsm-small'>Yahoo Finance daily settlements/quotes; contracts may be delayed and each symbol can have a different observation date. Futures prices are continuous contract proxies, not executable quotes.</div>",unsafe_allow_html=True)
+    categories=list(MACRO_GROUPS)
+    selection=st.selectbox("Asset class",["All markets"]+categories)
+    symbols=list(MACRO_SYMBOLS)
+    with st.spinner("Loading cached daily futures and yields history…"):
+        mc,_=prices(tuple(symbols))
+    market=macro_snapshot(mc)
+    if selection in ("All markets","US interest-rate yields"):
+        st.markdown("<div class='rsm-section'>US reference rates & Treasury yield curve · FRED</div>",unsafe_allow_html=True)
+        rates=fred_rates()
+        rates_tbl=fred_rates_table(rates)
+        if not rates_tbl.empty:
+            st.dataframe(rates_tbl,hide_index=True,use_container_width=True,
+                column_config={"Yield / rate %":st.column_config.NumberColumn(format="%.3f%%"),
+                    "Δ prior observation (pp)":st.column_config.NumberColumn(format="%+.3f"),
+                    "Source":st.column_config.LinkColumn("FRED",display_text="Open ↗")})
+            yield_curve=[(2,'DGS2'),(5,'DGS5'),(10,'DGS10'),(30,'DGS30')]
+            xp,yp=[],[]
+            for maturity,sym in yield_curve:
+                if sym in rates and rates[sym].notna().any():
+                    xp.append(maturity);yp.append(float(rates[sym].dropna().iloc[-1]))
+            if len(xp)>=2:
+                fig=go.Figure(go.Scatter(x=xp,y=yp,mode='lines+markers+text',
+                    text=[f'{v:.2f}%' for v in yp],textposition='top center',
+                    line=dict(color='#5bb7eb',width=3),marker=dict(size=11)))
+                fig.update_layout(paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color='#d6e2ef'),height=290,
+                    margin=dict(l=35,r=15,t=22,b=28),xaxis=dict(title='Maturity (years)',tickvals=xp,gridcolor=LINE),
+                    yaxis=dict(title='Yield %',gridcolor=LINE))
+                st.plotly_chart(fig,use_container_width=True,theme=None)
+            st.caption("FRED daily published rates (not real-time). Latest observation date is shown separately for each series. Data may be revised; source: fred.stlouisfed.org.")
+        else:
+            st.info("FRED reference-rate feed temporarily unavailable; Yahoo Treasury yield proxies are still displayed below.")
+    if selection!="All markets" and not market.empty:
+        market=market[market['Group']==selection]
+    if market.empty:
+        st.warning("Macro data unavailable from Yahoo Finance. Try refreshing later; missing symbols are not fabricated.")
+    else:
+        st.dataframe(market,hide_index=True,use_container_width=True,height=min(720,60+35*len(market)),
+            column_config={'Last':st.column_config.NumberColumn(format='%.3f'),
+                '1D change':st.column_config.NumberColumn('1D % / yield pp',format='%+.3f'),
+                '1W %':st.column_config.NumberColumn(format='%+.2f'),
+                '1M %':st.column_config.NumberColumn(format='%+.2f'),
+                'TradingView':st.column_config.LinkColumn('Chart',display_text='Open ↗')})
+        st.markdown("<div class='rsm-section'>Instrument chart</div>",unsafe_allow_html=True)
+        pick=st.selectbox("Instrument",market['Ticker'].tolist(),format_func=lambda sym:f"{MACRO_SYMBOLS[sym][1]} ({sym})")
+        if pick in mc:
+            src=mc[pick].dropna().tail(130)
+            if not src.empty:
+                value=src
+                fig=go.Figure(go.Scatter(x=value.index,y=value.values,mode='lines',line=dict(color='#48c89b',width=2)))
+                fig.update_layout(paper_bgcolor=PANEL,plot_bgcolor=PANEL,font=dict(color='#d6e2ef'),height=370,
+                                  margin=dict(l=25,r=15,t=10,b=25),xaxis=dict(gridcolor=LINE),
+                                  yaxis=dict(title='% (yield)' if pick in MACRO_YIELD else 'Contract price',gridcolor=LINE))
+                st.plotly_chart(fig,use_container_width=True,theme=None)
+        st.caption("For ^IRX, ^FVX, ^TNX and ^TYX: Yahoo already quotes yields in %, and the 1D change is expressed in percentage points (pp), NOT the percent price return. Other contracts show daily % price change. Data is indicative, not real-time guaranteed.")
+
 else:
     st.markdown("<div class='rsm-section'>MINERVINI-STYLE BREAKOUT SCANNER</div><div class='rsm-small'>Screen for positive RS, improving leadership, trend alignment, RVOL and approximate directional volume. No signal guarantees an entry.</div>",unsafe_allow_html=True)
     c1,c2,c3,c4=st.columns(4)
@@ -816,4 +1193,4 @@ else:
     st.caption("Simplified candidate = RS 1W>0 & RS 1M>0 & Price>MA50>MA200 & RVOL>1 & U/D proxy>1.5. It does NOT implement all original Minervini trend-template/VCP conditions; U/D is NOT the official Up/Down Volume metric.")
 
 st.divider()
-st.markdown("<span class='rsm-note'>DATA SOURCES · Constituents: public S&P 500 lists · Market cap: Nasdaq snapshot via zyhe16/top-us-stock-tickers · Price/volume: Yahoo Finance via yfinance · ETF holdings: Yahoo Finance or Stock Analysis. No execution, no brokerage credentials, no guaranteed real-time data.</span>",unsafe_allow_html=True)
+st.markdown("<span class='rsm-note'>DATA SOURCES · Constituents: public S&P 500 lists · Market cap: Nasdaq snapshot via zyhe16/top-us-stock-tickers · Daily price/volume and continuous futures: Yahoo Finance via yfinance · ETF holdings: Yahoo Finance or Stock Analysis · Market breadth: derived from available constituents. No execution, no brokerage credentials, no guaranteed real-time data.</span>",unsafe_allow_html=True)
