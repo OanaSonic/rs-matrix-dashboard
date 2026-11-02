@@ -39,46 +39,141 @@ h1,h2,h3,p,label,span{color:inherit}
 [data-testid="stMetricValue"]{color:#eaf2fa!important;font-weight:700}
 [data-testid="stSelectbox"]>div>div, [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input{background:#172231!important;color:#eaf2fa!important;border-color:#304154!important}
 
-/* Accessible form-control contrast (dark mode): native Streamlit / BaseWeb widgets. */
+/* === Accessibility: force readable foreground for ALL Streamlit form widgets. ===
+   The prior patch styled the control background but missed the visible selected
+   value in newer BaseWeb select widgets. Streamlit may portal menus to document
+   root, so popover selectors must not be scoped to stSelectbox. */
+:root, body, [data-testid="stAppViewContainer"] {
+  --rsm-control-foreground: #E6EDF5;
+  --rsm-control-label: #C8D5E5;
+  --rsm-control-secondary: #A6B7C9;
+  --rsm-control-background: #172231;
+  --rsm-control-border: #41546B;
+}
+
+/* Labels, including inputs that Streamlit renders with internal markdown. */
 [data-testid="stSelectbox"] label,
-[data-testid="stSelectbox"] [data-testid="stWidgetLabel"] *,
-[data-testid="stRadio"] [data-testid="stWidgetLabel"] *,
-[data-testid="stNumberInput"] label,
+[data-testid="stMultiSelect"] label,
 [data-testid="stTextInput"] label,
-[data-testid="stSlider"] label {color:#c8d5e5!important;opacity:1!important}
+[data-testid="stTextArea"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stDateInput"] label,
+[data-testid="stTimeInput"] label,
+[data-testid="stSelectSlider"] label,
+[data-testid="stSlider"] label,
+[data-testid="stRadio"] label,
+[data-testid="stCheckbox"] label,
+[data-testid="stSegmentedControl"] label,
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] *,
+[data-testid="stSelectbox"] label *,
+[data-testid="stMultiSelect"] label * {
+  color: var(--rsm-control-label) !important;
+  -webkit-text-fill-color: var(--rsm-control-label) !important;
+  opacity: 1 !important;
+}
+
+/* Outer field surface + selectable values: handle div, p, span and input. */
 [data-testid="stSelectbox"] [data-baseweb="select"],
-[data-testid="stSelectbox"] [data-baseweb="select"]>div {
-  background:#172231!important;
-  border-color:#41546b!important;
-  color:#e6edf5!important;
-  opacity:1!important;
+[data-testid="stMultiSelect"] [data-baseweb="select"],
+[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+[data-testid="stTextInput"] [data-baseweb="input"] > div,
+[data-testid="stTextArea"] [data-baseweb="textarea"] > div,
+[data-testid="stNumberInput"] [data-baseweb="input"] > div,
+[data-testid="stDateInput"] [data-baseweb="input"] > div,
+[data-testid="stTimeInput"] [data-baseweb="input"] > div {
+  background-color: var(--rsm-control-background) !important;
+  border-color: var(--rsm-control-border) !important;
+  color: var(--rsm-control-foreground) !important;
+  opacity: 1 !important;
 }
+
+/* Selected dropdown value, including Streamlit's Markdown-formatted selections.
+   Explicitly set fill color because WebKit can retain the system light theme. */
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
-[data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"],
-[data-testid="stSelectbox"] [data-baseweb="select"] [data-testid="stMarkdownContainer"],
-[data-testid="stSelectbox"] [data-baseweb="select"] input {
-  color:#e6edf5!important;
-  -webkit-text-fill-color:#e6edf5!important;
-  opacity:1!important;
+[data-testid="stMultiSelect"] [data-baseweb="select"] *,
+[data-testid="stSelectbox"] [role="combobox"],
+[data-testid="stMultiSelect"] [role="combobox"],
+[data-testid="stSelectbox"] [role="combobox"] *,
+[data-testid="stMultiSelect"] [role="combobox"] *,
+[data-testid="stSelectbox"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stMultiSelect"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-testid="stNumberInput"] input,
+[data-testid="stDateInput"] input,
+[data-testid="stTimeInput"] input,
+[data-testid="stSelectSlider"] [data-baseweb="slider"] *,
+[data-testid="stRadio"] label p,
+[data-testid="stCheckbox"] label p,
+[data-testid="stSegmentedControl"] button {
+  color: var(--rsm-control-foreground) !important;
+  -webkit-text-fill-color: var(--rsm-control-foreground) !important;
+  opacity: 1 !important;
 }
-[data-testid="stSelectbox"] [data-baseweb="select"] input::placeholder,
-[data-testid="stTextInput"] input::placeholder {
-  color:#a8b8cb!important;
-  -webkit-text-fill-color:#a8b8cb!important;
-  opacity:1!important;
+
+/* Specifically catch disabled controls, which Streamlit grays out aggressively.
+   Preserve a subtle difference while keeping the selected value legible. */
+[data-testid="stSelectbox"] [aria-disabled="true"],
+[data-testid="stSelectbox"] [aria-disabled="true"] *,
+[data-testid="stMultiSelect"] [aria-disabled="true"],
+[data-testid="stMultiSelect"] [aria-disabled="true"] * {
+  color: var(--rsm-control-label) !important;
+  -webkit-text-fill-color: var(--rsm-control-label) !important;
+  opacity: 0.94 !important;
 }
-/* Dropdown popovers are rendered outside the selectbox container. */
+
+/* Focus ring and dropdown chevrons. */
+[data-testid="stSelectbox"] svg,
+[data-testid="stMultiSelect"] svg,
+[data-testid="stSelectSlider"] svg {
+  color: var(--rsm-control-secondary) !important;
+  fill: currentColor !important;
+  opacity: 1 !important;
+}
+[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within,
+[data-testid="stMultiSelect"] [data-baseweb="select"]:focus-within {
+  outline: 1px solid #5EACD7 !important;
+  border-radius: 9px;
+}
+
+/* Dropdown popover lives outside the select control. Target its items and
+   any markdown nodes, including currently-selected and hovered options. */
 [data-baseweb="popover"] [role="listbox"],
 [data-baseweb="popover"] [role="option"],
-[data-baseweb="popover"] [data-baseweb="menu"] {
-  background:#172231!important;
-  color:#e6edf5!important;
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="popover"] [data-baseweb="menu"] > div,
+[data-baseweb="menu"] [role="option"] {
+  background-color: var(--rsm-control-background) !important;
+  color: var(--rsm-control-foreground) !important;
 }
-[data-baseweb="popover"] [role="option"] * {color:#e6edf5!important;opacity:1!important}
+[data-baseweb="popover"] [role="option"] *,
+[data-baseweb="popover"] [data-baseweb="menu"] *,
+[data-baseweb="menu"] [role="option"] *,
+[role="listbox"] [role="option"],
+[role="listbox"] [role="option"] * {
+  color: var(--rsm-control-foreground) !important;
+  -webkit-text-fill-color: var(--rsm-control-foreground) !important;
+  opacity: 1 !important;
+}
 [data-baseweb="popover"] [aria-selected="true"],
-[data-baseweb="popover"] [role="option"]:hover {background:#2c4055!important}
-[data-testid="stTextInput"] input,
-[data-testid="stNumberInput"] input {color:#e6edf5!important;-webkit-text-fill-color:#e6edf5!important}
+[data-baseweb="popover"] [role="option"]:hover,
+[role="listbox"] [aria-selected="true"],
+[role="listbox"] [role="option"]:hover {
+  background-color: #2C4055 !important;
+}
+
+/* Placeholders must be distinguishable from selected values, not invisible. */
+[data-testid="stSelectbox"] input::placeholder,
+[data-testid="stMultiSelect"] input::placeholder,
+[data-testid="stTextInput"] input::placeholder,
+[data-testid="stTextArea"] textarea::placeholder,
+[data-testid="stNumberInput"] input::placeholder {
+  color: var(--rsm-control-secondary) !important;
+  -webkit-text-fill-color: var(--rsm-control-secondary) !important;
+  opacity: 1 !important;
+}
 
 [data-testid="stCheckbox"] label,[data-testid="stRadio"] label{color:#dce6f2!important}
 button[kind="primary"]{background:#22ab73!important;border-color:#22ab73!important;color:#08120d!important}
