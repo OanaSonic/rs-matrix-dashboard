@@ -1,4 +1,4 @@
-"""RS Matrix v5 — dark trading dashboard with sector grouping, market breadth and macro.
+"""RS Matrix v6 — dark dashboard with in-app interactive chart popups.
 Public daily-data research tool; does not promise consolidated real-time quotes.
 """
 import html
@@ -6,11 +6,12 @@ import io
 import math
 import re
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 import yfinance as yf
@@ -177,7 +178,31 @@ h1,h2,h3,p,label,span{color:inherit}
 
 [data-testid="stCheckbox"] label,[data-testid="stRadio"] label{color:#dce6f2!important}
 button[kind="primary"]{background:#22ab73!important;border-color:#22ab73!important;color:#08120d!important}
+/* Dark surfaces for every data list, toolbar, header and editable grid.
+   Streamlit renders its spreadsheet on canvas: theme config + dataframe Styler
+   (see dark_table helper) both supply dark cell backgrounds. */
+[data-testid="stDataFrame"], [data-testid="stTable"],
+[data-testid="stDataEditor"], [data-testid="stDataFrame"] > div,
+[data-testid="stDataFrame"] canvas, [data-testid="stDataEditor"] canvas,
+[data-testid="stTable"] table, [data-testid="stTable"] th,
+[data-testid="stTable"] td {background-color:#131b26!important;color:#e6edf5!important;border-color:#2c3847!important}
 [data-testid="stDataFrame"], [data-testid="stTable"]{border:1px solid #2c3847!important;border-radius:10px}
+[data-testid="stDataFrame"] button, [data-testid="stDataFrame"] [data-testid="stElementToolbar"],
+[data-testid="stDataFrame"] [data-testid="stElementToolbar"] button,
+[data-testid="stDataFrame"] [data-testid="stDataFrameToolbar"],
+[data-testid="stDataFrame"] [role="button"] {background-color:#1b2938!important;color:#e6edf5!important}
+[data-testid="stDialog"] [role="dialog"], [data-testid="stDialog"] [data-testid="stVerticalBlock"],
+[data-testid="stDialog"] [data-testid="stDialogContainer"] {background-color:#101a26!important;color:#e6edf5!important}
+/* Checkboxes and radio labels and secondary Streamlit menus stay readable. */
+[data-testid="stRadio"] label *, [data-testid="stCheckbox"] label *,
+[data-testid="stNumberInput"] label *, [data-testid="stSlider"] label *,
+[data-testid="stExpander"] summary *,
+[data-testid="stSelectbox"] [role="combobox"] * {color:#e6edf5!important;-webkit-text-fill-color:#e6edf5!important}
+[data-baseweb="popover"], [data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] [role="option"] {background-color:#172231!important;color:#e6edf5!important}
+[data-baseweb="popover"] [role="option"]:hover {background-color:#30465d!important}
+.rsm-bubble,.rsm-etfbubble{cursor:pointer}
+
 div[data-testid="stExpander"]{background:#101824;border:1px solid #253142;border-radius:10px}
 [data-testid="stAlert"]{border-radius:10px}
 .block-container hr{border-color:#233142}
@@ -328,6 +353,182 @@ SPDR = {
 PERIODS = ["1D", "1W", "1M", "3M", "6M", "YTD"]
 HEADERS = {"User-Agent":"Mozilla/5.0 (compatible; RSMatrixResearch/3.0)"}
 TIER_ORDER = ["Mega", "Large", "Mid", "Small"]
+
+# Hyperlink bubbles use same-app query parameters, not external tabs.
+# Streamlit does not expose click callbacks from arbitrary st.markdown HTML,
+# so this URL navigation is the supported no-extra-dependency bridge.
+WORKSPACES = ["RS MATRIX", "SECTOR SPDR", "SECTOR ROTATION", "MARKET BREADTH",
+              "MACRO MARKETS", "MINERVINI SCANNER"]
+SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,22}$")
+
+def valid_ticker(value):
+    ticker=str(value).strip().upper()
+    return ticker if SYMBOL_PATTERN.fullmatch(ticker) else ""
+
+def popup_href(ticker, view_name, rs_window="1W"):
+    symbol=valid_ticker(ticker)
+    if not symbol:
+        return "#"
+    return "?"+urlencode({"rsm_chart":symbol, "rsm_view":view_name, "rsm_window":rs_window})
+
+def dark_table(frame, *, key, ticker_col=None, **kwargs):
+    """Consistently dark Glide dataframe + selected-row chart action.
+
+    Using a Pandas Styler guarantees actual cell fills, not only a dark outline.
+    DataFrame selection is handled natively by Streamlit; no JS injection.
+    """
+    if frame is None or frame.empty:
+        st.info("No rows available for this table.")
+        return
+    styled=frame.style.set_properties(**{
+        "background-color":"#131b26", "color":"#e6edf5",
+        "border-color":"#2b3b4d"}).set_table_styles([
+            {"selector":"th", "props":[("background-color", "#1b2938"),
+                                            ("color", "#e6edf5"),
+                                            ("border-color", "#304054")]},
+            {"selector":"td", "props":[("background-color", "#131b26"),
+                                            ("color", "#e6edf5")]}
+        ])
+    args=dict(kwargs)
+    if ticker_col is not None and ticker_col in frame.columns:
+        event=st.dataframe(styled,key=key,on_select="rerun",selection_mode="single-row",**args)
+        selected=event.selection.rows
+        marker="_rsm_table_seen_"+key
+        if selected:
+            i=int(selected[0])
+            ticker=valid_ticker(frame.iloc[i][ticker_col]) if i<len(frame) else ""
+            current=(i,ticker)
+            if ticker and st.session_state.get(marker)!=current:
+                st.session_state["_rsm_popup_request"]=ticker
+            st.session_state[marker]=current
+        else:
+            st.session_state.pop(marker,None)
+        st.caption("Click/select a row to open its chart in a popup. The Chart link opens TradingView in a new tab.")
+    else:
+        st.dataframe(styled,key=key,**args)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def popup_history(ticker):
+    """Fetch only the clicked symbol + SPY. Does not re-scan 500 stocks."""
+    symbols=[ticker] if ticker=="SPY" else [ticker,"SPY"]
+    raw=yf.download(symbols,period="2y",interval="1d",auto_adjust=True,
+                    progress=False,threads=True,group_by="column")
+    if raw is None or raw.empty:
+        return pd.DataFrame(),pd.Series(dtype=float)
+    if isinstance(raw.columns,pd.MultiIndex):
+        try:
+            security=raw.xs(ticker,axis=1,level=-1).copy()
+        except (KeyError,ValueError):
+            return pd.DataFrame(),pd.Series(dtype=float)
+        try:
+            spy=raw.xs("SPY",axis=1,level=-1)["Close"].copy()
+        except (KeyError,ValueError):
+            spy=security["Close"].copy() if ticker=="SPY" else pd.Series(dtype=float)
+    else:
+        security=raw.copy()
+        spy=security["Close"].copy() if ticker=="SPY" and "Close" in security else pd.Series(dtype=float)
+    for col in ("Open","High","Low","Close","Volume"):
+        if col not in security.columns:
+            security[col]=np.nan
+    security=security[["Open","High","Low","Close","Volume"]].dropna(subset=["Close"]).sort_index()
+    return security,spy.sort_index()
+
+def ohlc_chart(ticker, bars, spy, timeframe, interval):
+    work=bars.copy().sort_index()
+    reference=spy.copy().sort_index()
+    if interval=="Weekly":
+        work=work.resample("W-FRI").agg({"Open":"first","High":"max",
+            "Low":"min","Close":"last","Volume":"sum"}).dropna(subset=["Close"])
+        reference=reference.resample("W-FRI").last() if not reference.empty else reference
+    work["MA20"]=work["Close"].rolling(20,min_periods=5).mean()
+    work["MA50"]=work["Close"].rolling(50,min_periods=10).mean()
+    windows={"1M":31,"3M":93,"6M":186,"1Y":366,"2Y":745}
+    start=work.index.max()-pd.Timedelta(days=windows[timeframe])
+    shown=work.loc[work.index>=start]
+    if len(shown)<2:
+        shown=work.tail(40)
+    # The displayed RS line is normalized at the first visible bar (100).
+    ratio=shown["Close"].div(reference.reindex(shown.index).ffill()) if not reference.empty else pd.Series(dtype=float)
+    rs=ratio.div(ratio.dropna().iloc[0]).mul(100) if not ratio.dropna().empty and ratio.dropna().iloc[0]!=0 else pd.Series(dtype=float)
+    fig=make_subplots(rows=3,cols=1,shared_xaxes=True,vertical_spacing=.035,
+                      row_heights=[.63,.17,.20],subplot_titles=("Price / moving averages","Volume", "RS line vs SPY · base 100"))
+    if shown[["Open","High","Low"]].notna().all().all():
+        fig.add_trace(go.Candlestick(x=shown.index,open=shown.Open,high=shown.High,low=shown.Low,close=shown.Close,
+            increasing_line_color="#24bd76",decreasing_line_color="#f05256",name=ticker),row=1,col=1)
+    else:
+        fig.add_trace(go.Scatter(x=shown.index,y=shown.Close,mode="lines",name=ticker,
+                                 line=dict(color="#24bd76",width=2)),row=1,col=1)
+    fig.add_trace(go.Scatter(x=shown.index,y=shown.MA20,name="MA20",mode="lines",
+        line=dict(color="#e6b85c",width=1.4)),row=1,col=1)
+    fig.add_trace(go.Scatter(x=shown.index,y=shown.MA50,name="MA50",mode="lines",
+        line=dict(color="#5cacf0",width=1.4)),row=1,col=1)
+    colors=np.where(shown.Close>=shown.Open,"#24bd76","#f05256")
+    fig.add_trace(go.Bar(x=shown.index,y=shown.Volume,marker_color=colors,showlegend=False,name="Volume"),row=2,col=1)
+    if not rs.empty:
+        rs_shown=rs.reindex(shown.index).dropna()
+        if not rs_shown.empty:
+            fig.add_trace(go.Scatter(x=rs_shown.index,y=rs_shown,mode="lines",
+                line=dict(color="#d5a5ff",width=2),name="RS/SPY"),row=3,col=1)
+            fig.add_hline(y=100,line_color="#6b829a",line_dash="dot",row=3,col=1)
+    fig.update_layout(height=665,margin=dict(l=25,r=25,t=45,b=15),
+       paper_bgcolor="#101a26",plot_bgcolor="#101a26",font=dict(color="#e6edf5",size=12),
+       hovermode="x unified",legend=dict(orientation="h",y=1.07,x=0),
+       xaxis_rangeslider_visible=False,
+       modebar_bgcolor="#1b2938",modebar_color="#dce8f5")
+    fig.update_xaxes(showgrid=True,gridcolor="#2b3a4b",rangeslider_visible=False)
+    fig.update_yaxes(showgrid=True,gridcolor="#2b3a4b",zeroline=False)
+    return fig
+
+@st.dialog("Chart preview",width="large")
+def show_ticker_popup(ticker):
+    ticker=valid_ticker(ticker)
+    if not ticker:return
+    st.markdown(f"### {html.escape(ticker)} · Price chart")
+    tf,iv=st.columns([1,1])
+    with tf:
+        window=st.selectbox("Chart timeframe",["1M","3M","6M","1Y","2Y"],index=2,key="pop_tf_"+ticker)
+    with iv:
+        interval=st.radio("Bars",["Daily","Weekly"],horizontal=True,key="pop_bars_"+ticker)
+    try:
+        if ticker in FRED_RATES:
+            # FRED observations are policy/rate time series, not OHLC contracts.
+            rates=fred_rates()
+            if rates.empty or ticker not in rates or rates[ticker].dropna().empty:
+                st.warning("FRED history currently unavailable for this series.")
+            else:
+                vals=rates[ticker].dropna()
+                days={"1M":31,"3M":93,"6M":186,"1Y":366,"2Y":745}[window]
+                vals=vals[vals.index>=vals.index.max()-pd.Timedelta(days=days)]
+                fig=go.Figure(go.Scatter(x=vals.index,y=vals.values,mode="lines+markers",
+                    line=dict(color="#48c89b",width=2),marker=dict(size=3),name="Rate %"))
+                fig.update_layout(height=455,paper_bgcolor="#101a26",plot_bgcolor="#101a26",
+                    font=dict(color="#e6edf5"),margin=dict(l=20,r=20,t=15,b=20),
+                    xaxis=dict(gridcolor="#2b3a4b"),yaxis=dict(title="Rate / Yield (%)",gridcolor="#2b3a4b"))
+                st.plotly_chart(fig,use_container_width=True,theme=None,key="popup_fred_"+ticker)
+                st.caption("FRED daily observation; not a real-time rate. Source date: "+str(pd.Timestamp(vals.index[-1]).date()))
+        else:
+            with st.spinner("Loading ticker history…"):
+                bars,reference=popup_history(ticker)
+            if bars.empty:
+                st.warning("The free data provider returned no bars for this symbol.")
+            else:
+                fig=ohlc_chart(ticker,bars,reference,window,interval)
+                st.plotly_chart(fig,use_container_width=True,theme=None,
+                    key="popup_fig_"+ticker)
+                st.caption(f"Last available daily close: {pd.Timestamp(bars.index[-1]).date()} · Yahoo Finance indicative/delayed data; not an executable real-time quote. RS is the stock/SPY ratio normalized at 100 over the displayed window.")
+    except Exception as exc:
+        st.warning("Price history temporarily unavailable: "+str(exc)[:170])
+    left,right=st.columns(2)
+    with left:
+        if ticker in FRED_RATES:
+            st.link_button("Open FRED source ↗", "https://fred.stlouisfed.org/series/"+quote(ticker,safe=""),use_container_width=True)
+        else:
+            st.link_button("Open in TradingView ↗",
+                "https://www.tradingview.com/chart/?symbol="+quote(ticker,safe=""),use_container_width=True)
+    with right:
+        if st.button("Close chart",use_container_width=True,key="close_popup_"+ticker):
+            st.rerun()
+
 
 
 def fmt_signed(x):
@@ -568,7 +769,7 @@ def sector_rail(frame):
     return "<div class='rsm-rail'><div class='rsm-head'>Sector RS · equal-weight mean</div>"+"".join(lines)+"</div>"
 
 
-def bubbles_matrix(frame, max_symbols=160, group_col="Industry"):
+def bubbles_matrix(frame, max_symbols=160, group_col="Industry", rs_window="1W"):
     """Sector group bands run vertically before the industry column.
 
     Securities without verified cap are omitted rather than put in Unknown;
@@ -606,8 +807,8 @@ def bubbles_matrix(frame, max_symbols=160, group_col="Industry"):
                     cap=r["Market Cap"]
                     cap_text=f"${cap/1e9:,.1f}B" if pd.notna(cap) else "N/A"
                     tooltip=html.escape(f"{symbol} · {sec} · {ind} · RS {fmt_signed(r['RS %'])} · cap {cap_text}",quote=True)
-                    url="https://www.tradingview.com/chart/?symbol="+quote(symbol,safe="")
-                    circles.append(f"<a class='rsm-bubble' href='{url}' target='_blank' rel='noopener noreferrer' title='{tooltip}' style='background:{color_rs(r['RS %'])}'>{html.escape(symbol)}</a>")
+                    url=popup_href(symbol,"RS MATRIX",rs_window)
+                    circles.append(f"<a class='rsm-bubble' target='_self' href='{html.escape(url,quote=True)}' title='{tooltip} · Click for popup chart' style='background:{color_rs(r['RS %'])}'>{html.escape(symbol)}</a>")
                 lines.append("<div class='rsm-cell'>"+("".join(circles) if circles else "<span class='rsm-empty'>·</span>")+"</div>")
             lines.append("</div>")
         lines.append("</div></div>")
@@ -635,7 +836,7 @@ def spdr_rank_html(ranking):
     return "".join(lines)+"</div>"
 
 
-def spdr_bubbles(holdings, value_col="RS vs SPY %"):
+def spdr_bubbles(holdings, value_col="RS vs SPY %", rs_window="1W"):
     """Provider-weight sorted, ticker-linked dark bubble rows for SPDR holdings.
 
     Missing quotes / weights are shown as unavailable and never colored as signal.
@@ -653,8 +854,8 @@ def spdr_bubbles(holdings, value_col="RS vs SPY %"):
             weight=r.get("Weight %",np.nan)
             title=html.escape(f"{sym} · fund weight {weight:.2f}% · {value_col}: {val_str}" if pd.notna(weight) else f"{sym} · {value_col}: {val_str}",quote=True)
             bubble_color=color_rs(val)
-            url="https://www.tradingview.com/chart/?symbol="+quote(sym,safe="")
-            lines.append(f"<a target='_blank' rel='noopener noreferrer' class='rsm-etfbubble' style='background:{bubble_color}' href='{url}' title='{title}'>{html.escape(sym)}</a>")
+            url=popup_href(sym,"SECTOR SPDR",rs_window)
+            lines.append(f"<a class='rsm-etfbubble' target='_self' style='background:{bubble_color}' href='{html.escape(url,quote=True)}' title='{title} · Click for popup chart'>{html.escape(sym)}</a>")
         lines.append("</div></div>")
     return "".join(lines)+"</div></div>"
 
@@ -717,7 +918,7 @@ def rotation_fig(c):
                 marker=dict(size=[4]*(len(trail)-1)+[8],color=qcolors[status]),
                 line=dict(color=qcolors[status],width=2),name=etf,showlegend=False,
                 hovertemplate=etf+"<br>20D RS %{x:.2f}<br>RS acceleration %{y:.2f}<extra></extra>"))
-        fig.add_trace(go.Scatter(x=[current_x],y=[dy],mode="markers+text",text=[etf],textposition="top center",
+        fig.add_trace(go.Scatter(x=[current_x],y=[dy],mode="markers+text",text=[etf],customdata=[etf],textposition="top center",
             textfont=dict(size=11,color="#eef5fa"),marker=dict(size=16,color=qcolors[status],line=dict(color="#d2e3ee",width=1)),
             name=etf,showlegend=False,hovertemplate=f"{etf} · {sector}<br>RS 1M %{{x:.2f}}<br>Momentum %{{y:.2f}} pp<extra></extra>"))
     fig.add_hline(y=0,line_width=1,line_color="#8291a2")
@@ -887,14 +1088,25 @@ st.markdown("""<div class='rsm-brand'>
 <span class='rsm-chip'>FREE DAILY DATA</span></div>""",unsafe_allow_html=True)
 
 # A dedicated navigation row avoids six workspaces wrapping inside a narrow column.
-view=st.radio("Workspace",["RS MATRIX","SECTOR SPDR","SECTOR ROTATION","MARKET BREADTH","MACRO MARKETS","MINERVINI SCANNER"],
+# A bubble click navigates to the same app with a chart query parameter.
+# Consume it immediately so closing the modal cannot leave a stale popup URL.
+_rsm_incoming_symbol=valid_ticker(st.query_params.get("rsm_chart",""))
+_rsm_incoming_view=st.query_params.get("rsm_view","RS MATRIX")
+_rsm_incoming_window=st.query_params.get("rsm_window","1W")
+if "rsm_chart" in st.query_params:
+    st.query_params.clear()
+if _rsm_incoming_symbol:
+    st.session_state["_rsm_popup_request"]=_rsm_incoming_symbol
+view=st.radio("Workspace",WORKSPACES,
+              index=WORKSPACES.index(_rsm_incoming_view) if _rsm_incoming_view in WORKSPACES else 0,
               horizontal=True,label_visibility="collapsed")
 bar1,bar3,bar4=st.columns([2.5,1.35,1.2],gap="large")
 with bar1:
     universe_choice=st.selectbox("Universe",["S&P 500","NYSE + Nasdaq (top N)"],
                                 help="Used for RS Matrix, Market Breadth and Minervini Scanner; SPDR and Macro data are independent.")
 with bar3:
-    period=st.selectbox("RS WINDOW",PERIODS,index=1,
+    period=st.selectbox("RS WINDOW",PERIODS,
+                        index=PERIODS.index(_rsm_incoming_window) if _rsm_incoming_window in PERIODS else 1,
                         help="Used for RS Matrix, SPDR ETF strength and scanner.")
 with bar4:
     st.write(" ")
@@ -966,13 +1178,14 @@ if view=="RS MATRIX":
         st.caption("Sector RS = unweighted mean of available constituent RS, not an ETF return. Ranked over the selected window.")
     with right:
         st.markdown("<div class='rsm-head'>SECTOR → INDUSTRY × MARKET CAP · "+html.escape(period)+" vs SPY</div>",unsafe_allow_html=True)
-        st.markdown(bubbles_matrix(shown,max_symbols=show_count),unsafe_allow_html=True)
+        st.markdown(bubbles_matrix(shown,max_symbols=show_count,rs_window=period),unsafe_allow_html=True)
         missing_cap=int((~shown["Cap tier"].isin(TIER_ORDER)).sum())
-    st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · open TradingView by clicking. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
+    st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · click bubbles for an in-app chart popup. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
     st.markdown("<div class='rsm-section'>Quick leadership list</div>",unsafe_allow_html=True)
     top=shown.sort_values("RS %",ascending=False).head(35).copy()
     top["TradingView"]=top.Symbol.map(lambda s:"https://www.tradingview.com/chart/?symbol="+quote(str(s),safe=""))
-    st.dataframe(top[["Symbol","Security","Sector","Industry","Cap tier","RS %","RS acceleration","RVOL","TradingView"]],
+    dark_table(top[["Symbol","Security","Sector","Industry","Cap tier","RS %","RS acceleration","RVOL","TradingView"]],
+        key="leadership_results",ticker_col="Symbol",
         hide_index=True,use_container_width=True,
         column_config={"RS %":st.column_config.NumberColumn(format="%.2f%%"),
                        "RS acceleration":st.column_config.NumberColumn("RS accel. (pp)",format="%+.2f"),
@@ -996,7 +1209,7 @@ elif view=="SECTOR SPDR":
             st.markdown("<div class='rsm-head'>SECTOR ETF STRENGTH · FULL NAMES</div>",unsafe_allow_html=True)
             st.markdown(spdr_rank_html(ranking),unsafe_allow_html=True)
         with b:
-            st.dataframe(ranking,hide_index=True,use_container_width=True,height=510,
+            dark_table(ranking,key="spdr_sector_rank",ticker_col="ETF",hide_index=True,use_container_width=True,height=510,
                 column_config={"RS vs SPY %":st.column_config.NumberColumn(format="%+.2f")})
     etf_pick=st.selectbox("Top holdings for sector",["All 11 ETFs"]+[f"{s} · {SPDR[s]}" for s in SPDR],index=1)
     picks=sector_etfs if etf_pick=="All 11 ETFs" else [etf_pick.split(" · ")[0]]
@@ -1020,10 +1233,10 @@ elif view=="SECTOR SPDR":
         st.markdown("<div class='rsm-section'>Top 10 holdings · relative leadership</div>",unsafe_allow_html=True)
         color_mode=st.radio("Color the bubbles by",["RS vs SPY %","RS vs ETF (pp)"],horizontal=True,
                             help="RS vs ETF is the difference, in percentage points, between the stock and ETF relative performance versus SPY.")
-        st.markdown(spdr_bubbles(holdings,color_mode),unsafe_allow_html=True)
-        st.caption("Bubble labels are stock tickers · click to open TradingView · sorted by holding weight, not by RS.")
+        st.markdown(spdr_bubbles(holdings,color_mode,rs_window=period),unsafe_allow_html=True)
+        st.caption("Bubble labels are stock tickers · click to open a chart popup · sorted by holding weight, not by RS.")
         holdings_show=holdings[["ETF","Sector","Symbol","Weight %","RS vs SPY %","RS vs ETF (pp)","TradingView","Holdings source"]]
-        st.dataframe(holdings_show,use_container_width=True,hide_index=True,height=min(620,max(230,34*len(holdings)+40)),
+        dark_table(holdings_show,key="spdr_holdings_list",ticker_col="Symbol",use_container_width=True,hide_index=True,height=min(620,max(230,34*len(holdings)+40)),
             column_config={"Weight %":st.column_config.NumberColumn(format="%.2f%%"),
                 "RS vs SPY %":st.column_config.NumberColumn(format="%+.2f"),
                 "RS vs ETF (pp)":st.column_config.NumberColumn(format="%+.2f"),
@@ -1040,13 +1253,28 @@ elif view=="SECTOR ROTATION":
         st.warning("Insufficient daily data for sector rotation.")
     else:
         fig,rot=rotation_fig(etf_close)
-        st.plotly_chart(fig,use_container_width=True,theme=None)
+        rotation_event=st.plotly_chart(fig,use_container_width=True,theme=None,
+            key="rotation_bubble_plot",on_select="rerun",selection_mode="points")
+        selected_points=rotation_event.selection.points
+        if selected_points:
+            selected_point=selected_points[0]
+            raw_ticker=selected_point.get("customdata") or selected_point.get("text") or ""
+            if isinstance(raw_ticker,(list,tuple)):
+                raw_ticker=raw_ticker[0] if raw_ticker else ""
+            selected_ticker=valid_ticker(raw_ticker)
+            selected_marker=(selected_point.get("curve_number"),selected_point.get("point_index"),selected_ticker)
+            if selected_ticker and st.session_state.get("_rsm_rotation_last_selection")!=selected_marker:
+                st.session_state["_rsm_popup_request"]=selected_ticker
+            st.session_state["_rsm_rotation_last_selection"]=selected_marker
+        else:
+            st.session_state.pop("_rsm_rotation_last_selection",None)
+        st.caption("Click a sector ETF dot to open its chart popup; select a row in the table below as an alternative.")
         if not rot.empty:
             a,b,c,d=st.columns(4)
             for widget,status in zip((a,b,c,d),("Leading","Improving","Weakening","Lagging")):
                 widget.metric(status,int((rot.Rotation==status).sum()))
             rot=rot.sort_values("RS 1M %",ascending=False)
-            st.dataframe(rot,use_container_width=True,hide_index=True,
+            dark_table(rot,key="rotation_results",ticker_col="ETF",use_container_width=True,hide_index=True,
                 column_config={"RS 1M %":st.column_config.NumberColumn(format="%+.2f"),
                                "RS momentum pp":st.column_config.NumberColumn(format="%+.2f")})
         st.info("Custom rotation proxy — NOT an official RRG/JdK RS-Ratio or RS-Momentum. X: 21-session ETF return vs SPY. Y: latest 5-session RS minus preceding 5-session RS (percentage points). Trails are weekly observations, not predictions.")
@@ -1090,7 +1318,7 @@ elif view=="MARKET BREADTH":
             st.plotly_chart(fig,use_container_width=True,theme=None)
         with cc4:
             st.markdown("<div class='rsm-head'>BREADTH BY SECTOR · % ABOVE MA50</div>",unsafe_allow_html=True)
-            st.dataframe(by_sector,hide_index=True,use_container_width=True,height=335,
+            dark_table(by_sector,key="breadth_sector_table",hide_index=True,use_container_width=True,height=335,
                 column_config={'Above MA50 %':st.column_config.ProgressColumn('Above MA50 %',min_value=0,max_value=100,format='%.1f%%')})
         st.caption("Definitions: advances/declines vs prior daily close; 52-week extremes vs prior 252 sessions; A/D line and 19/39 EMA oscillator calculated from available current-universe constituents. Historical breadth has survivorship bias; incomplete histories are excluded per indicator. This is not exchange-wide NYSE/Nasdaq advance/decline data.")
 
@@ -1108,7 +1336,7 @@ elif view=="MACRO MARKETS":
         rates=fred_rates()
         rates_tbl=fred_rates_table(rates)
         if not rates_tbl.empty:
-            st.dataframe(rates_tbl,hide_index=True,use_container_width=True,
+            dark_table(rates_tbl,key="rates_table",ticker_col="Series",hide_index=True,use_container_width=True,
                 column_config={"Yield / rate %":st.column_config.NumberColumn(format="%.3f%%"),
                     "Δ prior observation (pp)":st.column_config.NumberColumn(format="%+.3f"),
                     "Source":st.column_config.LinkColumn("FRED",display_text="Open ↗")})
@@ -1133,7 +1361,7 @@ elif view=="MACRO MARKETS":
     if market.empty:
         st.warning("Macro data unavailable from Yahoo Finance. Try refreshing later; missing symbols are not fabricated.")
     else:
-        st.dataframe(market,hide_index=True,use_container_width=True,height=min(720,60+35*len(market)),
+        dark_table(market,key="macro_results",ticker_col="Ticker",hide_index=True,use_container_width=True,height=min(720,60+35*len(market)),
             column_config={'Last':st.column_config.NumberColumn(format='%.3f'),
                 '1D change':st.column_config.NumberColumn('1D % / yield pp',format='%+.3f'),
                 '1W %':st.column_config.NumberColumn(format='%+.2f'),
@@ -1178,7 +1406,7 @@ else:
     view_df["TradingView"]=view_df.Symbol.map(lambda s:"https://www.tradingview.com/chart/?symbol="+quote(str(s),safe=""))
     st.caption(f"{len(view_df)} matches · {int(view_df['Minervini candidate'].sum())} meet the dashboard's simplified Minervini-style composite")
     ordered=["Symbol","Security","Sector","Industry","Cap tier","RS %","RS acceleration","RS new 20D high","Price","MA50","MA200","RVOL","U/D proxy","Trend","Minervini candidate","TradingView"]
-    st.dataframe(view_df[ordered],hide_index=True,use_container_width=True,height=620,
+    dark_table(view_df[ordered],key="minervini_results",ticker_col="Symbol",hide_index=True,use_container_width=True,height=620,
         column_config={"Symbol":st.column_config.TextColumn("TICKER",width="small"),
             "RS %":st.column_config.NumberColumn(format="%+.2f"),
             "RS acceleration":st.column_config.NumberColumn(format="%+.2f"),
@@ -1191,6 +1419,12 @@ else:
     st.download_button("⬇ Export scanner CSV",view_df.to_csv(index=False).encode("utf-8"),
                        file_name="minervini_rs_scanner.csv",mime="text/csv")
     st.caption("Simplified candidate = RS 1W>0 & RS 1M>0 & Price>MA50>MA200 & RVOL>1 & U/D proxy>1.5. It does NOT implement all original Minervini trend-template/VCP conditions; U/D is NOT the official Up/Down Volume metric.")
+
+# Only one dialog is launched per Streamlit rerun, regardless of source.
+# Avoid opening again on unrelated filter updates after a selected dataframe row.
+_popup_now=valid_ticker(st.session_state.pop("_rsm_popup_request",""))
+if _popup_now:
+    show_ticker_popup(_popup_now)
 
 st.divider()
 st.markdown("<span class='rsm-note'>DATA SOURCES · Constituents: public S&P 500 lists · Market cap: Nasdaq snapshot via zyhe16/top-us-stock-tickers · Daily price/volume and continuous futures: Yahoo Finance via yfinance · ETF holdings: Yahoo Finance or Stock Analysis · Market breadth: derived from available constituents. No execution, no brokerage credentials, no guaranteed real-time data.</span>",unsafe_allow_html=True)
