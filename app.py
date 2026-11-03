@@ -1,4 +1,4 @@
-"""RS Matrix v7 — dark dashboard, hover charts and a shared watchlist.
+"""RS Matrix v8 — fixed ticker hover, compact chart, sortable leader tables and shared watchlist.
 Public daily-data research tool; does not promise consolidated real-time quotes.
 """
 import html
@@ -358,6 +358,19 @@ html body [role="listbox"] [role="option"][aria-selected="true"] {
 .rsm-list-table .rsm-up{color:#56dfa0}.rsm-list-table .rsm-down{color:#ff868e}
 .rsm-bubble,.rsm-etfbubble{cursor:zoom-in!important}
 .rsm-watch-hint{color:#afc1d5;font-size:12px;margin:6px 0 12px}
+
+/* v8: sortable HTML headers, dark action buttons and compact popup. */
+.rsm-sort-head{display:flex;align-items:center;gap:7px;background:transparent!important;color:#dceafa!important;border:0!important;padding:0!important;cursor:pointer;font:inherit;font-weight:750;text-align:left;white-space:nowrap}
+.rsm-sort-head:hover{color:#ffffff!important}
+.rsm-sort-head:focus-visible{outline:2px solid #7fcaff!important;outline-offset:4px}
+.rsm-sort-arrow{font-size:12px;color:#89abc9!important}
+[data-testid="stDialog"] [data-testid="stVerticalBlock"]{gap:.4rem!important}
+[data-testid="stDialog"] [data-testid="stElementContainer"]{margin-bottom:0!important}
+[data-testid="stDialog"] .stButton button[kind="secondary"],
+[data-testid="stDialog"] .stLinkButton a {background:#223247!important;color:#e6edf5!important;border:1px solid #466079!important}
+[data-testid="stDialog"] .stButton button[kind="secondary"] *,
+[data-testid="stDialog"] .stLinkButton a * {color:#e6edf5!important}
+[data-testid="stDialog"] .stButton button[kind="primary"] {color:#08120d!important}
 </style>
 """, unsafe_allow_html=True)
 
@@ -378,7 +391,12 @@ WORKSPACES = ["RS MATRIX", "SECTOR SPDR", "SECTOR ROTATION", "MARKET BREADTH",
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,22}$")
 
 def valid_ticker(value):
+    """Return a real symbol, never stringified Python nulls such as 'NONE'."""
+    if value is None or not isinstance(value, (str, int)):
+        return ""
     ticker=str(value).strip().upper()
+    if ticker in {"", "NONE", "NULL", "NAN", "NAT", "<NA>", "UNDEFINED", "FALSE"}:
+        return ""
     return ticker if SYMBOL_PATTERN.fullmatch(ticker) else ""
 
 def popup_href(ticker, view_name, rs_window="1W"):
@@ -437,7 +455,7 @@ def watchlist_symbols():
     with WATCH_LOCK:
         with _db() as connection:
             records=connection.execute('SELECT symbol FROM shared_watchlist ORDER BY added_at DESC,symbol LIMIT 250').fetchall()
-        return [r[0] for r in records]
+        return [r[0] for r in records if valid_ticker(r[0])]
 
 def watchlist_add(ticker):
     symbol=valid_ticker(ticker)
@@ -496,8 +514,11 @@ def dark_table(frame, *, key, ticker_col=None, **kwargs):
     cols=list(shown.columns)
     rows=[f'<div class="rsm-table-shell" style="max-height:{height}px">',
           '<table class="rsm-list-table"><thead><tr>']
-    for col in cols:
-        rows.append('<th>'+html.escape(str(col))+'</th>')
+    for i,col in enumerate(cols):
+        safe=html.escape(str(col))
+        rows.append(f'<th aria-sort="none"><button type="button" class="rsm-sort-head" '
+                    f'data-rsm-sortcol="{i}" title="Sort by {safe}" aria-label="Sort by {safe}">'
+                    f'{safe}<span class="rsm-sort-arrow" aria-hidden="true">⇅</span></button></th>')
     rows.append('</tr></thead><tbody>')
     for _,rec in shown.iterrows():
         rows.append('<tr>')
@@ -528,7 +549,7 @@ def dark_table(frame, *, key, ticker_col=None, **kwargs):
     st.markdown(''.join(rows),unsafe_allow_html=True)
     if len(frame)>len(shown):
         st.caption(f"Displaying first {len(shown):,} of {len(frame):,} rows; export the full CSV if needed.")
-    st.caption("Hover on a ticker for the full price chart; click to open it on touch devices.")
+    st.caption("Click any table column heading to sort · Hover on a ticker to preview its chart · Click a ticker on touch devices.")
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -575,7 +596,7 @@ def ohlc_chart(ticker, bars, spy, timeframe, interval):
     ratio=shown["Close"].div(reference.reindex(shown.index).ffill()) if not reference.empty else pd.Series(dtype=float)
     rs=ratio.div(ratio.dropna().iloc[0]).mul(100) if not ratio.dropna().empty and ratio.dropna().iloc[0]!=0 else pd.Series(dtype=float)
     fig=make_subplots(rows=3,cols=1,shared_xaxes=True,vertical_spacing=.035,
-                      row_heights=[.63,.17,.20],subplot_titles=("Price / moving averages","Volume", "RS line vs SPY · base 100"))
+                      row_heights=[.57,.17,.26],subplot_titles=("Price / moving averages","Volume", "RS line vs SPY · base 100"))
     if shown[["Open","High","Low"]].notna().all().all():
         fig.add_trace(go.Candlestick(x=shown.index,open=shown.Open,high=shown.High,low=shown.Low,close=shown.Close,
             increasing_line_color="#24bd76",decreasing_line_color="#f05256",name=ticker),row=1,col=1)
@@ -594,8 +615,8 @@ def ohlc_chart(ticker, bars, spy, timeframe, interval):
             fig.add_trace(go.Scatter(x=rs_shown.index,y=rs_shown,mode="lines",
                 line=dict(color="#d5a5ff",width=2),name="RS/SPY"),row=3,col=1)
             fig.add_hline(y=100,line_color="#6b829a",line_dash="dot",row=3,col=1)
-    fig.update_layout(height=665,margin=dict(l=25,r=25,t=45,b=15),
-       paper_bgcolor="#101a26",plot_bgcolor="#101a26",font=dict(color="#e6edf5",size=12),
+    fig.update_layout(height=420,margin=dict(l=22,r=18,t=33,b=8),
+       paper_bgcolor="#101a26",plot_bgcolor="#101a26",font=dict(color="#e6edf5",size=10),
        hovermode="x unified",legend=dict(orientation="h",y=1.07,x=0),
        xaxis_rangeslider_visible=False,
        modebar_bgcolor="#1b2938",modebar_color="#dce8f5")
@@ -603,69 +624,78 @@ def ohlc_chart(ticker, bars, spy, timeframe, interval):
     fig.update_yaxes(showgrid=True,gridcolor="#2b3a4b",zeroline=False)
     return fig
 
-@st.dialog("Chart preview",width="large")
+@st.dialog("Chart preview · shared watchlist",width="large")
 def show_ticker_popup(ticker):
     ticker=valid_ticker(ticker)
-    if not ticker:return
-    st.markdown(f"### {html.escape(ticker)} · Price chart")
-    tf,iv=st.columns([1,1])
+    if not ticker:
+        # Never expose an unusable watchlist button for a missing symbol.
+        st.warning("No valid ticker was selected. Hover or click on a specific stock or ETF symbol.")
+        return
+
+    # Watchlist control is deliberately ABOVE the price chart so it is visible
+    # without scrolling, and its label always identifies the selected symbol.
+    heading,action=st.columns([1.7,1.2],vertical_alignment="center")
+    with heading:
+        st.markdown(f"### {html.escape(ticker)} · Price / RS chart")
+        st.caption("Shared watchlist — visible to everyone using this public app")
+    with action:
+        try:
+            already_saved=ticker in watchlist_symbols()
+            if already_saved:
+                if st.button(f"✓ {ticker} saved · Remove",key="popup_remove_"+ticker,use_container_width=True):
+                    watchlist_remove(ticker)
+                    st.rerun(scope="fragment")
+            else:
+                if st.button(f"＋ Add {ticker} to Watchlist",key="popup_add_"+ticker,
+                             type="primary",use_container_width=True):
+                    watchlist_add(ticker)
+                    st.rerun(scope="fragment")
+        except Exception as exc:
+            st.error("Shared watchlist is unavailable: "+str(exc)[:140])
+
+    tf,iv=st.columns([1,1],gap="small")
     with tf:
-        window=st.selectbox("Chart timeframe",["1M","3M","6M","1Y","2Y"],index=2,key="pop_tf_"+ticker)
+        window=st.selectbox("History",["1M","3M","6M","1Y","2Y"],index=2,key="pop_tf_"+ticker)
     with iv:
         interval=st.radio("Bars",["Daily","Weekly"],horizontal=True,key="pop_bars_"+ticker)
     try:
         if ticker in FRED_RATES:
-            # FRED observations are policy/rate time series, not OHLC contracts.
             rates=fred_rates()
             if rates.empty or ticker not in rates or rates[ticker].dropna().empty:
-                st.warning("FRED history currently unavailable for this series.")
+                st.warning(f"No available observations for {ticker}.")
             else:
                 vals=rates[ticker].dropna()
                 days={"1M":31,"3M":93,"6M":186,"1Y":366,"2Y":745}[window]
                 vals=vals[vals.index>=vals.index.max()-pd.Timedelta(days=days)]
                 fig=go.Figure(go.Scatter(x=vals.index,y=vals.values,mode="lines+markers",
                     line=dict(color="#48c89b",width=2),marker=dict(size=3),name="Rate %"))
-                fig.update_layout(height=455,paper_bgcolor="#101a26",plot_bgcolor="#101a26",
-                    font=dict(color="#e6edf5"),margin=dict(l=20,r=20,t=15,b=20),
+                fig.update_layout(height=335,paper_bgcolor="#101a26",plot_bgcolor="#101a26",
+                    font=dict(color="#e6edf5"),margin=dict(l=15,r=15,t=12,b=10),
                     xaxis=dict(gridcolor="#2b3a4b"),yaxis=dict(title="Rate / Yield (%)",gridcolor="#2b3a4b"))
                 st.plotly_chart(fig,use_container_width=True,theme=None,key="popup_fred_"+ticker)
-                st.caption("FRED daily observation; not a real-time rate. Source date: "+str(pd.Timestamp(vals.index[-1]).date()))
+                st.caption("FRED observation, not a real-time quote · "+str(pd.Timestamp(vals.index[-1]).date()))
         else:
-            with st.spinner("Loading ticker history…"):
+            with st.spinner(f"Loading {ticker} price history…"):
                 bars,reference=popup_history(ticker)
             if bars.empty:
-                st.warning("The free data provider returned no bars for this symbol.")
+                st.warning(f"No price bars returned for {ticker}. You may still save this ticker to the shared watchlist above.")
             else:
                 fig=ohlc_chart(ticker,bars,reference,window,interval)
-                st.plotly_chart(fig,use_container_width=True,theme=None,
-                    key="popup_fig_"+ticker)
-                st.caption(f"Last available daily close: {pd.Timestamp(bars.index[-1]).date()} · Yahoo Finance indicative/delayed data; not an executable real-time quote. RS is the stock/SPY ratio normalized at 100 over the displayed window.")
+                st.plotly_chart(fig,use_container_width=True,theme=None,key="popup_fig_"+ticker)
+                st.caption(f"{ticker} · {pd.Timestamp(bars.index[-1]).date()} close · indicative/delayed Yahoo daily data · RS/SPY = ratio normalized to 100")
     except Exception as exc:
-        st.warning("Price history temporarily unavailable: "+str(exc)[:170])
-    st.markdown('---')
-    try:
-        saved=watchlist_symbols()
-        if ticker in saved:
-            if st.button('✓ In shared watchlist · Remove',key='watch_remove_'+ticker,use_container_width=True):
-                watchlist_remove(ticker)
-                st.success(ticker+' removed from the shared watchlist.')
-        else:
-            if st.button('＋ Add to shared watchlist',type='primary',key='watch_add_'+ticker,use_container_width=True):
-                watchlist_add(ticker)
-                st.success(ticker+' added — visible to all visitors.')
-    except Exception as exc:
-        st.error('Shared watchlist unavailable: '+str(exc)[:150])
-    left,right=st.columns(2)
+        st.warning(f"Could not load {ticker}: "+str(exc)[:150])
+
+    left,right=st.columns(2,gap="small")
     with left:
         if ticker in FRED_RATES:
-            st.link_button("Open FRED source ↗", "https://fred.stlouisfed.org/series/"+quote(ticker,safe=""),use_container_width=True)
+            st.link_button(f"{ticker} · FRED source ↗", "https://fred.stlouisfed.org/series/"+quote(ticker,safe=""),use_container_width=True)
         else:
-            st.link_button("Open in TradingView ↗",
+            st.link_button(f"{ticker} · TradingView ↗",
                 "https://www.tradingview.com/chart/?symbol="+quote(ticker,safe=""),use_container_width=True)
     with right:
         if st.button("Close chart",use_container_width=True,key="close_popup_"+ticker):
             st.rerun()
-
 
 
 def fmt_signed(x):
@@ -1318,10 +1348,21 @@ if view=="RS MATRIX":
         st.markdown(bubbles_matrix(shown,max_symbols=show_count,rs_window=period),unsafe_allow_html=True)
         missing_cap=int((~shown["Cap tier"].isin(TIER_ORDER)).sum())
     st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · hover a bubble to open the full chart, or click on touch screens. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
-    st.markdown("<div class='rsm-section'>Quick leadership list</div>",unsafe_allow_html=True)
-    top=shown.sort_values("RS %",ascending=False).head(35).copy()
+    st.markdown("<div class='rsm-section'>Quick leadership list · sortable</div>",unsafe_allow_html=True)
+    s1,s2,s3,s4=st.columns([1.2,1.2,1.3,1.0],gap="small")
+    with s1:
+        lead_sort=st.selectbox("Sort leaders by",["RS %","RS acceleration","RVOL","U/D proxy","Price","Market Cap"],key="leaders_sort")
+    with s2:
+        lead_rvol=st.number_input("RVOL ≥",min_value=0.0,max_value=20.0,value=0.0,step=.1,key="leaders_min_rvol")
+    with s3:
+        lead_ud=st.number_input("U/D proxy ≥",min_value=0.0,max_value=20.0,value=0.0,step=.1,key="leaders_min_ud")
+    with s4:
+        lead_limit=st.selectbox("Rows",[35,75,150,300],key="leaders_rows")
+    top=shown.loc[(shown["RVOL"]>=lead_rvol)&(shown["U/D proxy"]>=lead_ud)].copy()
+    top=top.sort_values(lead_sort,ascending=False,na_position="last").head(lead_limit)
     top["TradingView"]=top.Symbol.map(lambda s:"https://www.tradingview.com/chart/?symbol="+quote(str(s),safe=""))
-    dark_table(top[["Symbol","Security","Sector","Industry","Cap tier","RS %","RS acceleration","RVOL","TradingView"]],
+    st.caption(f"{len(top)} symbols shown · Click the RS, RVOL or other column header to re-sort directly in the list")
+    dark_table(top[["Symbol","Security","Sector","Industry","Cap tier","RS %","RS acceleration","RVOL","U/D proxy","TradingView"]],
         key="leadership_results",ticker_col="Symbol",
         hide_index=True,use_container_width=True,
         column_config={"RS %":st.column_config.NumberColumn(format="%.2f%%"),
@@ -1652,6 +1693,41 @@ export default function(component) {
   }
   document.addEventListener('pointerover', onOver, true);
   document.addEventListener('pointerout', onOut, true);
+  // Header sorting is client-side: no server rerun and no loss of hover links.
+  function onTableSort(e) {
+    const button = e.target && e.target.closest ? e.target.closest('.rsm-sort-head') : null;
+    if (!button) return;
+    const th=button.closest('th');
+    const table=button.closest('table.rsm-list-table');
+    if (!table || !th || !table.tBodies.length) return;
+    e.preventDefault();
+    const col=Number(button.getAttribute('data-rsm-sortcol'));
+    if (!Number.isInteger(col)) return;
+    const current=th.getAttribute('aria-sort');
+    const descending=/RS|RVOL|U\/D|Price|Weight|Cap|Change|Momentum|MA50|MA200/i.test(button.textContent);
+    const direction=current==='ascending'?'descending':current==='descending'?'ascending':descending?'descending':'ascending';
+    const rows=[...table.tBodies[0].rows];
+    const item=(tr)=>tr.cells[col]?.textContent?.trim() || '';
+    const numeric=(s)=>{
+      const raw=s.replace(/[,%$\s]/g,'').replace(/^[−–]/,'-');
+      return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)?Number(raw):null;
+    };
+    rows.sort((a,b)=>{
+      const A=item(a), B=item(b), x=numeric(A), y=numeric(B);
+      let d=x!==null&&y!==null?x-y:A.localeCompare(B,undefined,{numeric:true,sensitivity:'base'});
+      if (!A || A==='—') d=1;
+      if (!B || B==='—') d=-1;
+      return direction==='ascending'?d:-d;
+    });
+    table.querySelectorAll('th').forEach(h=>{
+      h.setAttribute('aria-sort','none');
+      const arrow=h.querySelector('.rsm-sort-arrow');if(arrow)arrow.textContent='⇅';
+    });
+    th.setAttribute('aria-sort',direction);
+    button.querySelector('.rsm-sort-arrow').textContent=direction==='ascending'?'↑':'↓';
+    table.tBodies[0].replaceChildren(...rows);
+  }
+  document.addEventListener('click',onTableSort,true);
   // Plotly Sector Rotation dots contain the ETF ticker in point.customdata.
   // Avoid attaching to generic plots without that attribute.
   const bound = new WeakSet();
@@ -1679,19 +1755,20 @@ export default function(component) {
     observer.disconnect();
     document.removeEventListener('pointerover', onOver, true);
     document.removeEventListener('pointerout', onOut, true);
+    document.removeEventListener('click',onTableSort,true);
   };
 }
 """
 hover_router=st.components.v2.component('rsm_ticker_hover_router',js=RSM_HOVER_JS)
 hover_result=hover_router(key='rsm_hover_router_mount',on_hovered_change=lambda: None)
-_hover_symbol=valid_ticker(getattr(hover_result,'hovered',''))
-if _hover_symbol and _hover_symbol != st.session_state.get('_rsm_last_hover_ticker'):
+_hover_symbol=valid_ticker(getattr(hover_result,'hovered',None))
+if _hover_symbol:
+    # Trigger values are transient; re-hovering the SAME ticker must work too.
     st.session_state['_rsm_popup_request']=_hover_symbol
-st.session_state['_rsm_last_hover_ticker']=_hover_symbol
 
 # Only one dialog is launched per Streamlit rerun, regardless of source.
 # Avoid opening again on unrelated filter updates after a selected dataframe row.
-_popup_now=valid_ticker(st.session_state.pop("_rsm_popup_request",""))
+_popup_now=valid_ticker(st.session_state.pop("_rsm_popup_request",None))
 if _popup_now:
     show_ticker_popup(_popup_now)
 
