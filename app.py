@@ -1,10 +1,13 @@
-"""RS Matrix v6 — dark dashboard with in-app interactive chart popups.
+"""RS Matrix v7 — dark dashboard, hover charts and a shared watchlist.
 Public daily-data research tool; does not promise consolidated real-time quotes.
 """
 import html
 import io
 import math
 import re
+import sqlite3
+import threading
+from pathlib import Path
 from datetime import datetime
 from urllib.parse import quote, urlencode
 
@@ -342,6 +345,19 @@ html body [role="listbox"] [role="option"][aria-selected="true"] {
  .rsm-matrix-row{grid-template-columns:195px repeat(4,minmax(115px,1fr))}
  .rsm-spdr-rank{grid-template-columns:minmax(150px,190px) minmax(70px,1fr) 60px;gap:7px}
 }
+
+/* v7: all ticker-bearing lists use a dark native HTML table. */
+.rsm-table-shell{overflow:auto;width:100%;border:1px solid #314154;border-radius:10px;background:#111a26;scrollbar-color:#53677e #142132}
+.rsm-list-table{border-collapse:separate;border-spacing:0;width:100%;min-width:760px;color:#e7eef8;font-size:13px}
+.rsm-list-table th{position:sticky;top:0;z-index:4;background:#203046;color:#dceafa;text-align:left;font-weight:700;padding:10px 11px;border-bottom:1px solid #405167;white-space:nowrap}
+.rsm-list-table td{padding:9px 11px;border-bottom:1px solid #26384a;background:#131e2b;white-space:nowrap;max-width:335px;overflow:hidden;text-overflow:ellipsis}
+.rsm-list-table tbody tr:nth-child(2n) td{background:#172331}
+.rsm-list-table tbody tr:hover td{background:#253b51}
+.rsm-list-table td .rsm-ticker-link,.rsm-spdr-rank .rsm-ticker-link{color:#a9dbff!important;font-weight:800;text-decoration:none;border-bottom:1px dotted #7799b2;cursor:zoom-in}
+.rsm-list-table td .rsm-ticker-link:hover,.rsm-spdr-rank .rsm-ticker-link:hover{color:#ffffff!important}
+.rsm-list-table .rsm-up{color:#56dfa0}.rsm-list-table .rsm-down{color:#ff868e}
+.rsm-bubble,.rsm-etfbubble{cursor:zoom-in!important}
+.rsm-watch-hint{color:#afc1d5;font-size:12px;margin:6px 0 12px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -358,7 +374,7 @@ TIER_ORDER = ["Mega", "Large", "Mid", "Small"]
 # Streamlit does not expose click callbacks from arbitrary st.markdown HTML,
 # so this URL navigation is the supported no-extra-dependency bridge.
 WORKSPACES = ["RS MATRIX", "SECTOR SPDR", "SECTOR ROTATION", "MARKET BREADTH",
-              "MACRO MARKETS", "MINERVINI SCANNER"]
+              "MACRO MARKETS", "MINERVINI SCANNER", "MY WATCHLIST"]
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,22}$")
 
 def valid_ticker(value):
@@ -371,41 +387,149 @@ def popup_href(ticker, view_name, rs_window="1W"):
         return "#"
     return "?"+urlencode({"rsm_chart":symbol, "rsm_view":view_name, "rsm_window":rs_window})
 
-def dark_table(frame, *, key, ticker_col=None, **kwargs):
-    """Consistently dark Glide dataframe + selected-row chart action.
+# -------- Shared watchlist: anonymous, editable by anyone with the app URL --------
+# Supabase is the durable backend. When it is not configured, SQLite is a
+# temporary shared fallback and will be reset by Community Cloud redeploys.
+WATCH_DB = Path('/tmp/rsm_shared_watchlist.sqlite3')
+WATCH_LOCK = threading.RLock()
+WATCH_MAX = 200
 
-    Using a Pandas Styler guarantees actual cell fills, not only a dark outline.
-    DataFrame selection is handled natively by Streamlit; no JS injection.
+def _sb_cfg():
+    try:
+        url=str(st.secrets.get('SUPABASE_URL','')).strip().rstrip('/')
+        key=str(st.secrets.get('SUPABASE_PUBLISHABLE_KEY', st.secrets.get('SUPABASE_ANON_KEY',''))).strip()
+        if url.startswith('https://') and key:
+            return url,key
+    except Exception:
+        pass
+    return None
+
+def watchlist_durable():
+    return _sb_cfg() is not None
+
+def _sb_request(method, query='', body=None, extra_headers=None):
+    config=_sb_cfg()
+    if not config:
+        raise RuntimeError('Persistent watchlist is not configured')
+    url,key=config
+    headers={'apikey':key,'Accept':'application/json','Content-Type':'application/json'}
+    # Legacy anon JWTs use Authorization; new sb_publishable_* keys must not.
+    if key.startswith('eyJ'):
+        headers['Authorization']='Bearer '+key
+    if extra_headers:headers.update(extra_headers)
+    response=requests.request(method,url+'/rest/v1/shared_watchlist'+query,
+                              headers=headers,json=body,timeout=15)
+    if response.status_code not in (200,201,204):
+        raise RuntimeError(f'Supabase HTTP {response.status_code}: '+response.text[:140])
+    if response.status_code==204 or not response.content:return []
+    return response.json()
+
+def _db():
+    connection=sqlite3.connect(str(WATCH_DB),timeout=10)
+    connection.execute('CREATE TABLE IF NOT EXISTS shared_watchlist (symbol TEXT PRIMARY KEY, added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)')
+    connection.commit()
+    return connection
+
+def watchlist_symbols():
+    if watchlist_durable():
+        records=_sb_request('GET','?select=symbol,added_at&order=added_at.desc&limit=250')
+        return [valid_ticker(r.get('symbol','')) for r in records if valid_ticker(r.get('symbol',''))]
+    with WATCH_LOCK:
+        with _db() as connection:
+            records=connection.execute('SELECT symbol FROM shared_watchlist ORDER BY added_at DESC,symbol LIMIT 250').fetchall()
+        return [r[0] for r in records]
+
+def watchlist_add(ticker):
+    symbol=valid_ticker(ticker)
+    if not symbol:
+        raise ValueError('Invalid ticker format')
+    present=watchlist_symbols()
+    if symbol in present:
+        return False
+    if len(present)>=WATCH_MAX:
+        raise ValueError(f'Watchlist is limited to {WATCH_MAX} tickers')
+    if watchlist_durable():
+        _sb_request('POST','?on_conflict=symbol',[{'symbol':symbol}],
+                    {'Prefer':'resolution=ignore-duplicates,return=minimal'})
+        return True
+    with WATCH_LOCK:
+        with _db() as connection:
+            connection.execute('INSERT OR IGNORE INTO shared_watchlist(symbol) VALUES(?)',(symbol,))
+            connection.commit()
+    return True
+
+def watchlist_remove(ticker):
+    symbol=valid_ticker(ticker)
+    if not symbol:raise ValueError('Invalid ticker')
+    if watchlist_durable():
+        _sb_request('DELETE','?symbol=eq.'+quote(symbol,safe=''),None,{'Prefer':'return=minimal'})
+        return
+    with WATCH_LOCK:
+        with _db() as connection:
+            connection.execute('DELETE FROM shared_watchlist WHERE symbol=?',(symbol,))
+            connection.commit()
+
+def watchlist_banner():
+    if watchlist_durable():
+        st.caption('Shared persistent watchlist · all visitors can add or remove tickers · Supabase storage.')
+    else:
+        st.warning('The shared watchlist currently uses temporary server storage: everyone can see and edit it, '
+                   'but it can be cleared by Streamlit restarts or redeploys. For permanent storage, configure '
+                   'Supabase in Streamlit app secrets (instructions in README).')
+
+def dark_table(frame, *, key, ticker_col=None, **kwargs):
+    """Dark, scrollable HTML table; hover any ticker to open the v6 chart.
+
+    Links and text are HTML-escaped, numeric formatting stays human-readable.
+    The downloadable CSV remains the full data set for large scanners.
     """
     if frame is None or frame.empty:
         st.info("No rows available for this table.")
         return
-    styled=frame.style.set_properties(**{
-        "background-color":"#131b26", "color":"#e6edf5",
-        "border-color":"#2b3b4d"}).set_table_styles([
-            {"selector":"th", "props":[("background-color", "#1b2938"),
-                                            ("color", "#e6edf5"),
-                                            ("border-color", "#304054")]},
-            {"selector":"td", "props":[("background-color", "#131b26"),
-                                            ("color", "#e6edf5")]}
-        ])
-    args=dict(kwargs)
-    if ticker_col is not None and ticker_col in frame.columns:
-        event=st.dataframe(styled,key=key,on_select="rerun",selection_mode="single-row",**args)
-        selected=event.selection.rows
-        marker="_rsm_table_seen_"+key
-        if selected:
-            i=int(selected[0])
-            ticker=valid_ticker(frame.iloc[i][ticker_col]) if i<len(frame) else ""
-            current=(i,ticker)
-            if ticker and st.session_state.get(marker)!=current:
-                st.session_state["_rsm_popup_request"]=ticker
-            st.session_state[marker]=current
-        else:
-            st.session_state.pop(marker,None)
-        st.caption("Click/select a row to open its chart in a popup. The Chart link opens TradingView in a new tab.")
-    else:
-        st.dataframe(styled,key=key,**args)
+    if ticker_col is None or ticker_col not in frame.columns:
+        styled=frame.style.set_properties(**{"background-color":"#131b26","color":"#e6edf5"})
+        st.dataframe(styled,key=key,**kwargs)
+        return
+    height=int(kwargs.get('height',520) or 520)
+    height=max(160,min(height,900))
+    shown=frame.head(350)
+    cols=list(shown.columns)
+    rows=[f'<div class="rsm-table-shell" style="max-height:{height}px">',
+          '<table class="rsm-list-table"><thead><tr>']
+    for col in cols:
+        rows.append('<th>'+html.escape(str(col))+'</th>')
+    rows.append('</tr></thead><tbody>')
+    for _,rec in shown.iterrows():
+        rows.append('<tr>')
+        for col in cols:
+            val=rec[col]
+            if col==ticker_col:
+                tick=valid_ticker(val)
+                if tick:
+                    url=popup_href(tick,view if 'view' in globals() else 'RS MATRIX',
+                                   period if 'period' in globals() else '1W')
+                    out=(f'<a class="rsm-ticker-link" data-rsm-ticker="{html.escape(tick,quote=True)}" '
+                         f'href="{html.escape(url,quote=True)}" title="Hover for full chart · click on touch screens">'
+                         +html.escape(tick)+'</a>')
+                else:out='—'
+            elif col in ('TradingView','Source') and isinstance(val,str) and val.startswith('https://'):
+                out='<a href="'+html.escape(val,quote=True)+'" target="_blank" rel="noopener noreferrer" style="color:#90c9ed">Open ↗</a>'
+            elif pd.isna(val):out='—'
+            elif isinstance(val,(bool,np.bool_)):out='✓' if val else '—'
+            elif isinstance(val,(float,np.floating)):
+                out=f'{val:+.2f}' if col.startswith(('RS','Δ')) or 'change' in col.lower() else f'{val:,.2f}'
+                color_class=' rsm-up' if val>0 else ' rsm-down' if val<0 else ''
+                out=f'<span class="{color_class}">{html.escape(out)}</span>'
+            elif isinstance(val,(int,np.integer)):out=f'{val:,}'
+            else:out=html.escape(str(val))
+            rows.append('<td>'+out+'</td>')
+        rows.append('</tr>')
+    rows.append('</tbody></table></div>')
+    st.markdown(''.join(rows),unsafe_allow_html=True)
+    if len(frame)>len(shown):
+        st.caption(f"Displaying first {len(shown):,} of {len(frame):,} rows; export the full CSV if needed.")
+    st.caption("Hover on a ticker for the full price chart; click to open it on touch devices.")
+
 
 @st.cache_data(ttl=900, show_spinner=False)
 def popup_history(ticker):
@@ -518,6 +642,19 @@ def show_ticker_popup(ticker):
                 st.caption(f"Last available daily close: {pd.Timestamp(bars.index[-1]).date()} · Yahoo Finance indicative/delayed data; not an executable real-time quote. RS is the stock/SPY ratio normalized at 100 over the displayed window.")
     except Exception as exc:
         st.warning("Price history temporarily unavailable: "+str(exc)[:170])
+    st.markdown('---')
+    try:
+        saved=watchlist_symbols()
+        if ticker in saved:
+            if st.button('✓ In shared watchlist · Remove',key='watch_remove_'+ticker,use_container_width=True):
+                watchlist_remove(ticker)
+                st.success(ticker+' removed from the shared watchlist.')
+        else:
+            if st.button('＋ Add to shared watchlist',type='primary',key='watch_add_'+ticker,use_container_width=True):
+                watchlist_add(ticker)
+                st.success(ticker+' added — visible to all visitors.')
+    except Exception as exc:
+        st.error('Shared watchlist unavailable: '+str(exc)[:150])
     left,right=st.columns(2)
     with left:
         if ticker in FRED_RATES:
@@ -808,7 +945,7 @@ def bubbles_matrix(frame, max_symbols=160, group_col="Industry", rs_window="1W")
                     cap_text=f"${cap/1e9:,.1f}B" if pd.notna(cap) else "N/A"
                     tooltip=html.escape(f"{symbol} · {sec} · {ind} · RS {fmt_signed(r['RS %'])} · cap {cap_text}",quote=True)
                     url=popup_href(symbol,"RS MATRIX",rs_window)
-                    circles.append(f"<a class='rsm-bubble' target='_self' href='{html.escape(url,quote=True)}' title='{tooltip} · Click for popup chart' style='background:{color_rs(r['RS %'])}'>{html.escape(symbol)}</a>")
+                    circles.append(f"<a class='rsm-bubble' data-rsm-ticker='{html.escape(symbol,quote=True)}' target='_self' href='{html.escape(url,quote=True)}' title='{tooltip} · Click for popup chart' style='background:{color_rs(r['RS %'])}'>{html.escape(symbol)}</a>")
                 lines.append("<div class='rsm-cell'>"+("".join(circles) if circles else "<span class='rsm-empty'>·</span>")+"</div>")
             lines.append("</div>")
         lines.append("</div></div>")
@@ -829,7 +966,7 @@ def spdr_rank_html(ranking):
         left=(50 if pd.isna(v) or v>=0 else 50-width)
         bgcolor=color_rs(v)
         lines.append("<div class='rsm-spdr-rank'>"
-                     f"<div class='rsm-spdr-name'><b>{html.escape(str(r['ETF']))}</b>{html.escape(str(r['Sector']))}</div>"
+                     f"<div class='rsm-spdr-name'><b><a class='rsm-ticker-link' data-rsm-ticker='{html.escape(str(r['ETF']),quote=True)}' href='{html.escape(popup_href(r['ETF'],'SECTOR SPDR'),quote=True)}'>{html.escape(str(r['ETF']))}</a></b>{html.escape(str(r['Sector']))}</div>"
                      f"<div class='rsm-spdr-track' role='img' aria-label='{html.escape(str(r['ETF'])+' '+val,quote=True)}'>"
                      f"<span class='rsm-spdr-bar' style='left:{left:.2f}%;width:{width:.2f}%;background:{bgcolor}'></span></div>"
                      f"<div class='rsm-spdr-value' style='color:{bgcolor}'>{val}</div></div>")
@@ -855,7 +992,7 @@ def spdr_bubbles(holdings, value_col="RS vs SPY %", rs_window="1W"):
             title=html.escape(f"{sym} · fund weight {weight:.2f}% · {value_col}: {val_str}" if pd.notna(weight) else f"{sym} · {value_col}: {val_str}",quote=True)
             bubble_color=color_rs(val)
             url=popup_href(sym,"SECTOR SPDR",rs_window)
-            lines.append(f"<a class='rsm-etfbubble' target='_self' style='background:{bubble_color}' href='{html.escape(url,quote=True)}' title='{title} · Click for popup chart'>{html.escape(sym)}</a>")
+            lines.append(f"<a class='rsm-etfbubble' data-rsm-ticker='{html.escape(sym,quote=True)}' target='_self' style='background:{bubble_color}' href='{html.escape(url,quote=True)}' title='{title} · Click for popup chart'>{html.escape(sym)}</a>")
         lines.append("</div></div>")
     return "".join(lines)+"</div></div>"
 
@@ -1180,7 +1317,7 @@ if view=="RS MATRIX":
         st.markdown("<div class='rsm-head'>SECTOR → INDUSTRY × MARKET CAP · "+html.escape(period)+" vs SPY</div>",unsafe_allow_html=True)
         st.markdown(bubbles_matrix(shown,max_symbols=show_count,rs_window=period),unsafe_allow_html=True)
         missing_cap=int((~shown["Cap tier"].isin(TIER_ORDER)).sum())
-    st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · click bubbles for an in-app chart popup. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
+    st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · hover a bubble to open the full chart, or click on touch screens. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
     st.markdown("<div class='rsm-section'>Quick leadership list</div>",unsafe_allow_html=True)
     top=shown.sort_values("RS %",ascending=False).head(35).copy()
     top["TradingView"]=top.Symbol.map(lambda s:"https://www.tradingview.com/chart/?symbol="+quote(str(s),safe=""))
@@ -1234,7 +1371,7 @@ elif view=="SECTOR SPDR":
         color_mode=st.radio("Color the bubbles by",["RS vs SPY %","RS vs ETF (pp)"],horizontal=True,
                             help="RS vs ETF is the difference, in percentage points, between the stock and ETF relative performance versus SPY.")
         st.markdown(spdr_bubbles(holdings,color_mode,rs_window=period),unsafe_allow_html=True)
-        st.caption("Bubble labels are stock tickers · click to open a chart popup · sorted by holding weight, not by RS.")
+        st.caption("Bubble labels are stock tickers · hover to open a chart popup · sorted by holding weight, not by RS.")
         holdings_show=holdings[["ETF","Sector","Symbol","Weight %","RS vs SPY %","RS vs ETF (pp)","TradingView","Holdings source"]]
         dark_table(holdings_show,key="spdr_holdings_list",ticker_col="Symbol",use_container_width=True,hide_index=True,height=min(620,max(230,34*len(holdings)+40)),
             column_config={"Weight %":st.column_config.NumberColumn(format="%.2f%%"),
@@ -1268,7 +1405,7 @@ elif view=="SECTOR ROTATION":
             st.session_state["_rsm_rotation_last_selection"]=selected_marker
         else:
             st.session_state.pop("_rsm_rotation_last_selection",None)
-        st.caption("Click a sector ETF dot to open its chart popup; select a row in the table below as an alternative.")
+        st.caption("Click a sector ETF dot or hover an ETF ticker in the table below to open its chart.")
         if not rot.empty:
             a,b,c,d=st.columns(4)
             for widget,status in zip((a,b,c,d),("Leading","Improving","Weakening","Lagging")):
@@ -1380,6 +1517,71 @@ elif view=="MACRO MARKETS":
                 st.plotly_chart(fig,use_container_width=True,theme=None)
         st.caption("For ^IRX, ^FVX, ^TNX and ^TYX: Yahoo already quotes yields in %, and the 1D change is expressed in percentage points (pp), NOT the percent price return. Other contracts show daily % price change. Data is indicative, not real-time guaranteed.")
 
+elif view=="MY WATCHLIST":
+    st.markdown("<div class='rsm-section'>MY WATCHLIST · SHARED BY ALL USERS</div>",unsafe_allow_html=True)
+    st.markdown("<div class='rsm-small'>Hover on any symbol to open the full chart and add/remove it. No login; everyone sees the same list and can edit it.</div>",unsafe_allow_html=True)
+    watchlist_banner()
+    try:
+        watch_symbols=watchlist_symbols()
+    except Exception as exc:
+        st.error('Cannot read the shared watchlist: '+str(exc)[:200])
+        watch_symbols=[]
+    a,b=st.columns([3,1])
+    with a:
+        typed=st.text_input('Add ticker manually',placeholder='Example: AAPL, XLK or GLD').strip().upper()
+    with b:
+        st.write(' ')
+        if st.button('＋ Add symbol',type='primary',use_container_width=True):
+            try:
+                if not valid_ticker(typed):st.warning('Enter a valid ticker.')
+                else:
+                    added=watchlist_add(typed)
+                    if added:st.success(typed+' added to the shared watchlist.')
+                    else:st.info(typed+' is already in the watchlist.')
+                    st.rerun()
+            except Exception as exc:st.error(str(exc))
+    if not watch_symbols:
+        st.info('The shared watchlist is empty. Hover over any ticker elsewhere in the app, then choose Add to shared watchlist.')
+    else:
+        left,right=st.columns([1.1,3],gap='large')
+        with left:
+            to_delete=st.selectbox('Remove ticker',watch_symbols)
+            if st.button('Remove selected ticker',use_container_width=True):
+                try:
+                    watchlist_remove(to_delete)
+                    st.rerun()
+                except Exception as exc:st.error(str(exc))
+            st.metric('Saved symbols',len(watch_symbols))
+            st.caption('Ticker list is shared with everyone who visits the app.')
+        with right:
+            with st.spinner('Loading cached quote history for watchlist…'):
+                watch_close,_=prices(tuple(watch_symbols))
+            if not watch_close.empty:
+                rec=[]
+                for sym in watch_symbols:
+                    if sym not in watch_close.columns:continue
+                    s=watch_close[sym].dropna()
+                    if s.empty:continue
+                    def pchange(window):
+                        if len(s)<=window:return np.nan
+                        return (float(s.iloc[-1])/float(s.iloc[-window-1])-1)*100
+                    spy=watch_close.get('SPY',pd.Series(dtype=float)).dropna()
+                    stock_week=pchange(5)
+                    stock_month=pchange(21)
+                    spy_week=(float(spy.iloc[-1])/float(spy.iloc[-6])-1)*100 if len(spy)>5 else np.nan
+                    spy_month=(float(spy.iloc[-1])/float(spy.iloc[-22])-1)*100 if len(spy)>21 else np.nan
+                    rec.append({'Ticker':sym,'Last':float(s.iloc[-1]),'1W %':stock_week,
+                                '1M %':stock_month,'RS 1W vs SPY (pp)':stock_week-spy_week,
+                                'RS 1M vs SPY (pp)':stock_month-spy_month,
+                                'As of':str(pd.Timestamp(s.index[-1]).date())})
+                if rec:
+                    watch_frame=pd.DataFrame(rec).sort_values('RS 1W vs SPY (pp)',ascending=False)
+                    dark_table(watch_frame,key='shared_watchlist_results',ticker_col='Ticker',height=550)
+                    st.download_button('⬇ Export shared watchlist CSV',watch_frame.to_csv(index=False).encode('utf-8'),
+                                       file_name='shared_rs_watchlist.csv',mime='text/csv')
+                else:st.warning('Watchlist symbols found but quotes are temporarily unavailable.')
+            else:st.warning('Watchlist quote source unavailable; the saved ticker list is unaffected.')
+
 else:
     st.markdown("<div class='rsm-section'>MINERVINI-STYLE BREAKOUT SCANNER</div><div class='rsm-small'>Screen for positive RS, improving leadership, trend alignment, RVOL and approximate directional volume. No signal guarantees an entry.</div>",unsafe_allow_html=True)
     c1,c2,c3,c4=st.columns(4)
@@ -1419,6 +1621,73 @@ else:
     st.download_button("⬇ Export scanner CSV",view_df.to_csv(index=False).encode("utf-8"),
                        file_name="minervini_rs_scanner.csv",mime="text/csv")
     st.caption("Simplified candidate = RS 1W>0 & RS 1M>0 & Price>MA50>MA200 & RVOL>1 & U/D proxy>1.5. It does NOT implement all original Minervini trend-template/VCP conditions; U/D is NOT the official Up/Down Volume metric.")
+
+# Streamlit components v2: a native event listener catches hovered ticker HTML
+# within RS bubbles, SPDR bubbles, rankings and all ticker-bearing result tables.
+# After 500ms the existing full-size Streamlit dialog opens automatically.
+# Touchscreens can still click the href as a fallback.
+RSM_HOVER_JS = r"""
+export default function(component) {
+  const { setTriggerValue } = component;
+  let timer = null;
+  let active = null;
+  function tickerNode(target) {
+    return target && target.closest ? target.closest('[data-rsm-ticker]') : null;
+  }
+  function onOver(event) {
+    if (event.pointerType === 'touch') return;
+    const node = tickerNode(event.target);
+    if (!node) return;
+    const ticker = node.getAttribute('data-rsm-ticker');
+    if (!ticker || ticker === active) return;
+    clearTimeout(timer);
+    active = ticker;
+    timer = setTimeout(() => setTriggerValue('hovered', ticker), 500);
+  }
+  function onOut(event) {
+    const node = tickerNode(event.target);
+    if (!node || (event.relatedTarget && node.contains(event.relatedTarget))) return;
+    clearTimeout(timer);
+    active = null;
+  }
+  document.addEventListener('pointerover', onOver, true);
+  document.addEventListener('pointerout', onOut, true);
+  // Plotly Sector Rotation dots contain the ETF ticker in point.customdata.
+  // Avoid attaching to generic plots without that attribute.
+  const bound = new WeakSet();
+  function bindPlotly() {
+    document.querySelectorAll('div.js-plotly-plot').forEach((graph) => {
+      if (bound.has(graph) || typeof graph.on !== 'function') return;
+      bound.add(graph);
+      graph.on('plotly_hover', (evt) => {
+        const point = evt && evt.points && evt.points[0];
+        const value = point && point.customdata;
+        const ticker = Array.isArray(value) ? value[0] : value;
+        if (typeof ticker !== 'string' || !/^[A-Z0-9^][A-Z0-9.^=_-]{0,22}$/.test(ticker)) return;
+        clearTimeout(timer);
+        active=ticker;
+        timer=setTimeout(() => setTriggerValue('hovered',ticker), 500);
+      });
+      graph.on('plotly_unhover',() => {clearTimeout(timer);active=null;});
+    });
+  }
+  const observer=new MutationObserver(() => bindPlotly());
+  observer.observe(document.body,{subtree:true,childList:true});
+  bindPlotly();
+  return () => {
+    clearTimeout(timer);
+    observer.disconnect();
+    document.removeEventListener('pointerover', onOver, true);
+    document.removeEventListener('pointerout', onOut, true);
+  };
+}
+"""
+hover_router=st.components.v2.component('rsm_ticker_hover_router',js=RSM_HOVER_JS)
+hover_result=hover_router(key='rsm_hover_router_mount',on_hovered_change=lambda: None)
+_hover_symbol=valid_ticker(getattr(hover_result,'hovered',''))
+if _hover_symbol and _hover_symbol != st.session_state.get('_rsm_last_hover_ticker'):
+    st.session_state['_rsm_popup_request']=_hover_symbol
+st.session_state['_rsm_last_hover_ticker']=_hover_symbol
 
 # Only one dialog is launched per Streamlit rerun, regardless of source.
 # Avoid opening again on unrelated filter updates after a selected dataframe row.
