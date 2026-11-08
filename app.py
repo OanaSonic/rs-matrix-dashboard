@@ -1,4 +1,4 @@
-"""RS Matrix v9 — ordered workspaces and filtered-bubbles CSV; retains v8 hover/watchlist.
+"""RS Matrix v10 — multi-platform filtered exports in Matrix, Minervini and shared Watchlist.
 Public daily-data research tool; does not promise consolidated real-time quotes.
 """
 import html
@@ -494,6 +494,125 @@ def watchlist_banner():
         st.warning('The shared watchlist currently uses temporary server storage: everyone can see and edit it, '
                    'but it can be cleared by Streamlit restarts or redeploys. For permanent storage, configure '
                    'Supabase in Streamlit app secrets (instructions in README).')
+
+# -------- v10: trading-platform exports from the precise active selection --------
+def export_tickers(frame, ticker_column):
+    """Ordered, de-duplicated symbols actually in the selected dataframe."""
+    if frame is None or frame.empty or ticker_column not in frame.columns:
+        return []
+    found=[]
+    seen=set()
+    for value in frame[ticker_column].tolist():
+        symbol=valid_ticker(value)
+        if symbol and symbol not in seen:
+            found.append(symbol)
+            seen.add(symbol)
+    return found
+
+
+def stock_format_symbol(symbol, platform):
+    """Normalize US share classes only; do not rewrite unrelated contracts."""
+    sym=valid_ticker(symbol)
+    if re.fullmatch(r"[A-Z]{1,6}[.-][A-Z]",sym):
+        return sym[:-2] + ("." if platform=="tradingview" else "/") + sym[-1]
+    return sym
+
+
+@st.cache_data(ttl=24*3600,show_spinner=False)
+def exchange_lookup():
+    """Non-live venue lookup from published exchange symbol lists.
+
+    Never guess NYSE vs NASDAQ; multiple or missing venues are unresolved.
+    Download is cached 24h. Uses GitHub lists to avoid public-cloud 403s
+    from NasdaqTrader (which hosts the upstream symbol directories).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    root="https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main"
+    venues=("nasdaq","nyse","amex")
+    def read_venue(venue):
+        url=f"{root}/{venue}/{venue}_tickers.txt"
+        resp=requests.get(url,headers=HEADERS,timeout=12)
+        resp.raise_for_status()
+        tickers=set()
+        for raw in resp.text.splitlines():
+            tick=raw.strip().upper().replace("/","-").replace(".","-")
+            if valid_ticker(tick):tickers.add(tick)
+        if len(tickers)<150:
+            raise ValueError("Listing too short: "+venue)
+        return venue.upper(),tickers
+    venue_map={}
+    errors=[]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures={pool.submit(read_venue,v):v for v in venues}
+        for fut in as_completed(futures):
+            try:
+                venue,tickers=fut.result()
+                for symbol in tickers:
+                    venue_map.setdefault(symbol,set()).add(venue)
+            except Exception as exc:
+                errors.append(f"{futures[fut]}: {str(exc)[:90]}")
+    exact={s:next(iter(exchanges)) for s,exchanges in venue_map.items() if len(exchanges)==1}
+    ambiguous={s for s,v in venue_map.items() if len(v)>1}
+    return exact,ambiguous,errors
+
+
+def platform_export_panel(frame, *, ticker_column, filename_prefix, section_label):
+    """Exports always match the active filters / watchlist, never hidden table pages."""
+    tickers=export_tickers(frame,ticker_column)
+    stamp=datetime.utcnow().strftime("%Y-%m-%d")
+    with st.container(border=True):
+        st.markdown(f"**EXPORT · {section_label}**")
+        st.caption(f"{len(tickers):,} tickere din selecția curentă. Schimbarea filtrelor actualizează automat exporturile."
+                   " CSV-ul complet păstrează indicatorii; watchlisturile importă doar simbolurile.")
+        if not tickers:
+            st.info("Niciun simbol de exportat cu filtrele actuale.")
+            return
+
+        # Full data retains all analysis columns and every selected row.
+        csv_data=frame.to_csv(index=False).encode("utf-8-sig")
+        tos_symbols=[stock_format_symbol(s,"thinkorswim") for s in tickers]
+        tos_data=pd.DataFrame({"Symbol":tos_symbols}).to_csv(index=False).encode("utf-8-sig")
+        try:
+            exchanges,ambiguous,errors=exchange_lookup()
+        except Exception as exc:
+            exchanges,ambiguous,errors={},set(),[str(exc)[:90]]
+        tv_symbols=[]
+        unknown=[]
+        for sym in tickers:
+            # TradingView's US exchange codes align with venue names in the source.
+            venue=exchanges.get(sym.replace(".","-").replace("/","-"))
+            if venue and sym not in ambiguous:
+                tv_symbols.append(f"{venue}:{stock_format_symbol(sym,'tradingview')}")
+            else:
+                unknown.append(sym)
+        tv_text=",".join(tv_symbols)
+
+        c1,c2,c3=st.columns(3,gap="small")
+        with c1:
+            st.download_button("⬇ Full analysis CSV",csv_data,
+                file_name=f"{filename_prefix}_full_{stamp}.csv",mime="text/csv",
+                use_container_width=True,key=filename_prefix+"_full")
+        with c2:
+            st.download_button(f"⬇ TradingView TXT ({len(tv_symbols)})",tv_text.encode("utf-8"),
+                file_name=f"{filename_prefix}_tradingview_{stamp}.txt",mime="text/plain",
+                use_container_width=True,disabled=not tv_symbols,key=filename_prefix+"_tv")
+        with c3:
+            st.download_button("⬇ thinkorswim CSV",tos_data,
+                file_name=f"{filename_prefix}_thinkorswim_{stamp}.csv",mime="text/csv",
+                use_container_width=True,key=filename_prefix+"_tos")
+
+        if unknown:
+            st.warning(f"TradingView: {len(unknown)} simbol(uri) nu au bursă confirmată sau apar pe mai multe piețe și"
+                       " nu sunt incluse în TXT. Verifică-le în CSV-ul complet: "
+                       +", ".join(unknown[:12])+("…" if len(unknown)>12 else ""))
+        if errors and not tv_symbols:
+            st.caption("Sursa listărilor NASDAQ/NYSE/AMEX nu a răspuns. Celelalte exporturi rămân disponibile."
+                       " Încearcă din nou după actualizarea cache-ului.")
+        st.markdown("**Deepvue — copiază simbolurile de mai jos**")
+        st.code("\n".join(tickers),language="text")
+        st.caption("Folosește pictograma Copy din blocul de mai sus, apoi Deepvue → Watchlists → Add Symbol → Paste."
+                   " În TradingView: Watchlist → Upload list…; în thinkorswim Desktop: MarketWatch → Quotes → Import.")
+
 
 def dark_table(frame, *, key, ticker_col=None, **kwargs):
     """Dark, scrollable HTML table; hover any ticker to open the v6 chart.
@@ -1375,13 +1494,9 @@ if view=="RS MATRIX":
         export_rows.insert(1,"Price date",str(pd.Timestamp(close.index[-1]).date()))
         export_rows.insert(2,"Universe",universe_choice)
         export_rows["TradingView"]="https://www.tradingview.com/chart/?symbol="+export_rows["Symbol"].astype(str)
-        st.download_button(
-            f"⬇ Export RS Matrix bubbles CSV ({len(export_rows):,} tickere)",
-            data=export_rows.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"rs_matrix_bubbles_{period}_{pd.Timestamp(close.index[-1]).strftime('%Y-%m-%d')}.csv",
-            mime="text/csv",disabled=export_rows.empty,use_container_width=True,
-            key="download_filtered_rs_matrix")
-        st.caption("CSV = exact simbolurile reprezentate de bulele de mai sus, după sector, search, filtre RS/trend și limita Max bubbles. Se actualizează automat după fiecare schimbare de filtru. Lista Leaders are filtre separate.")
+        platform_export_panel(export_rows,ticker_column="Symbol",
+                              filename_prefix="rs_matrix_bubbles",section_label="RS MATRIX · VISIBLE BUBBLES")
+        st.caption("Exporturile conțin exact bulele vizibile, inclusiv limita Max bubbles; lista Quick Leadership are filtre separate.")
     st.markdown(f"<div class='rsm-foot'>Green: outperform SPY · Red: underperform · grouped by sector and industry · hover for exact data · hover a bubble to open the full chart, or click on touch screens. <b>{missing_cap}</b> symbols without market cap excluded from matrix (still eligible for scanner).</div>",unsafe_allow_html=True)
     st.markdown("<div class='rsm-section'>Quick leadership list · sortable</div>",unsafe_allow_html=True)
     s1,s2,s3,s4=st.columns([1.2,1.2,1.3,1.0],gap="small")
@@ -1619,6 +1734,7 @@ elif view=="MY WATCHLIST":
     if not watch_symbols:
         st.info('The shared watchlist is empty. Hover over any ticker elsewhere in the app, then choose Add to shared watchlist.')
     else:
+        watch_export_frame=pd.DataFrame({"Ticker":watch_symbols})
         left,right=st.columns([1.1,3],gap='large')
         with left:
             to_delete=st.selectbox('Remove ticker',watch_symbols)
@@ -1653,10 +1769,12 @@ elif view=="MY WATCHLIST":
                 if rec:
                     watch_frame=pd.DataFrame(rec).sort_values('RS 1W vs SPY (pp)',ascending=False)
                     dark_table(watch_frame,key='shared_watchlist_results',ticker_col='Ticker',height=550)
-                    st.download_button('⬇ Export shared watchlist CSV',watch_frame.to_csv(index=False).encode('utf-8'),
-                                       file_name='shared_rs_watchlist.csv',mime='text/csv')
+                    # Preserve every saved symbol in exports, including missing quotes.
+                    watch_export_frame=watch_export_frame.merge(watch_frame,on='Ticker',how='left',sort=False)
                 else:st.warning('Watchlist symbols found but quotes are temporarily unavailable.')
             else:st.warning('Watchlist quote source unavailable; the saved ticker list is unaffected.')
+        platform_export_panel(watch_export_frame,ticker_column='Ticker',
+                              filename_prefix='shared_watchlist',section_label='MY WATCHLIST · ALL SAVED SYMBOLS')
 
 else:
     st.markdown("<div class='rsm-section'>MINERVINI-STYLE BREAKOUT SCANNER</div><div class='rsm-small'>Screen for positive RS, improving leadership, trend alignment, RVOL and approximate directional volume. No signal guarantees an entry.</div>",unsafe_allow_html=True)
@@ -1694,8 +1812,8 @@ else:
             "RVOL":st.column_config.NumberColumn(format="%.2f"),
             "U/D proxy":st.column_config.NumberColumn(format="%.2f"),
             "TradingView":st.column_config.LinkColumn("Chart",display_text="Open ↗")})
-    st.download_button("⬇ Export scanner CSV",view_df.to_csv(index=False).encode("utf-8"),
-                       file_name="minervini_rs_scanner.csv",mime="text/csv")
+    platform_export_panel(view_df,ticker_column="Symbol",
+                          filename_prefix="minervini_scanner",section_label="MINERVINI · FILTERED RESULTS")
     st.caption("Simplified candidate = RS 1W>0 & RS 1M>0 & Price>MA50>MA200 & RVOL>1 & U/D proxy>1.5. It does NOT implement all original Minervini trend-template/VCP conditions; U/D is NOT the official Up/Down Volume metric.")
 
 # Streamlit components v2: a native event listener catches hovered ticker HTML
